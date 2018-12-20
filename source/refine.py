@@ -37,7 +37,7 @@ def rotation_matrix(alpha, beta, gamma):
     return rx.dot(ry).dot(rz)
 
 
-def create_system(path, tmp_file="../output/tmp_system.pdb"):
+def create_system(path, tmp_file="../output/tmp_system.pdb", forcefield_name="charmm36.xml"):
     """
     Creates system as .pdb file containing appropriate configuration for DRSystem.
     @param path:  path to .pdb file with initial system.
@@ -54,9 +54,11 @@ def create_system(path, tmp_file="../output/tmp_system.pdb"):
     omm_object = app.PDBFile(tmp_file)
     print("read PDB(openmm):", time.time() - time0, "sec")
     time0 = time.time()
+    forcefield = app.ForceField(forcefield_name)
     modeller = app.Modeller(omm_object.getTopology(), omm_object.getPositions())
     modeller.addHydrogens()
-    print("add hydrogens(openmm):", time.time() - time0, "sec")
+    # modeller.addExtraParticles(forcefield=forcefield)
+    print("add hydrogens and extra particles(openmm):", time.time() - time0, "sec")
     time0 = time.time()
     with open(tmp_file, mode='w') as inputfile:
         app.PDBFile.writeFile(modeller.getTopology(), modeller.getPositions(), inputfile)
@@ -85,6 +87,7 @@ class DRSystem:
         @param forcefield_name: name of forcefiled which is necessary to calculate force vector and energy.
         @type forcefield_name: str
         """
+
         self._pdy_protein_init = pdy.parsePDB(pdb_file)
         self._omm_protein = app.PDBFile(pdb_file)
         self._ligand = self._pdy_protein_init.select("chain A").copy()
@@ -95,6 +98,15 @@ class DRSystem:
 
         # OpenMM System
         forcefield = app.ForceField(forcefield_name)
+        # [templates, residues] = forcefield.generateTemplatesForUnmatchedResidues(self._omm_protein.topology)
+
+        # Set the atom types
+        # for template in templates:
+            # for atom in template.atoms:
+            #     atom.type = ...  # set the atom types here
+            # Register the template with the forcefield.
+            # forcefield.registerResidueTemplate(template)
+
         integrator = omm.LangevinIntegrator(300 * kelvin, 1.0 / picosecond, 2.0 * femtosecond)
         system = forcefield.createSystem(
             self._omm_protein.topology,
@@ -196,7 +208,7 @@ class NMSpaceWrapper:
         Create new wrapper of DRSystem instance. It allows you to operate the system in NM space.
         @param drs: DRSystem instance to wrap.
         @type drs: DRSystem
-        @param n_modes: number of modes. Should be less than NumberOfAtoms - 6.
+        @param n_modes: number of modes. Should be less than 3 * NumberOfAtoms - 6.
         @type n_modes: int
         """
         self._position = np.zeros(n_modes)
@@ -255,7 +267,6 @@ class NMSpaceWrapper:
         self._system.set_rigid(t, r)
         m = self._modes_init.shape[0]
         n = self._modes_init.shape[1]
-        print(m)
         tmp_modes = np.reshape(self._modes_init, (m, n // 3, 3)).copy()
         for i in range(m):
             for j in range(n // 3):
