@@ -1,0 +1,55 @@
+1. Install virtual env:
+	$ pip3 install virtualenv
+2. Create environment "env" from directory you want:
+	$ virtualenv env
+3. Activate environment "env":
+	$ source "path to env"/env/bin/activate
+4. Install important packages (from scipy installation guide):
+	$ python -m pip install numpy scipy matplotlib ipython jupyter pandas sympy nose
+5. Install pandas:
+	$ pip install pandas
+5. Install biopython:
+	$ pip install biopython
+6. Install ProDy:
+	$ pip install -U ProDy
+7. Install openmm:
+	Download openmm source .zip form git releases (https://github.com/pandegroup/openmm/releases).
+	a) C++ complier is already installed no ubuntu, but you need cmake and ccmake
+		$ sudo apt-get install cmake
+		$ sudo apt install cmake-curses-gui
+	b) install doxygen
+		$ sudo apt-get install doxygen
+	c) install swig
+		$ sudo apt-get install swig
+	c*) install any other tools from ccmake error messages
+	d) create build_openmm directory separately from source
+		$ mkdir "some path"/build_openmm
+	e) execute the following
+		$ cd "some path"/build_openmm
+		$ ccmake -i <path to OpenMM src directory>
+	f) press c to configure untill all starred/red variables are displayed.
+	g) press g to generate Makefile
+	h) type make in the openmm_build directory
+		$ make
+	i) type make install
+		$ sudo make install
+	j) install PythonAPI (IN "env" ENVIRONMENT)
+		$ make PythonInstall
+
+#################################################
+#                                               #
+#             Install Modeller                  #
+#                                               #
+#################################################
+
+0. Activate env
+1. Follow instruction on Modeller web site for generic unix (https://salilab.org/modeller/9.21/release.html#unix).
+	a) Download archive
+	b) Extract it into a folder.
+		gunzip modeller-9.21.tar.gz
+		tar -xvf modeller-9.21.tar
+	c) Call ./Install
+	d) Add modeller to env's pythonpath
+		create modeller.pth file containing paths to modeller:
+		.../modeller-dir/modlib
+		.../modeller-dir/modlib/lib/x86_64-intel8

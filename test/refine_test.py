@@ -11,7 +11,7 @@ def test_1():
     create_system(path)
     t0 = time.time()
     drs = DRSystem("../output/tmp_system.pdb", 'charmm36.xml')
-    print("construction of system:", -t0 + time.time(), "sec")
+    print("construction of a system:", -t0 + time.time(), "sec")
     t0 = time.time()
     s = 0
     for i in range(100):
@@ -32,7 +32,7 @@ def test_2():
     create_system(path)
     t0 = time.time()
     drs = DRSystem("../output/tmp_system.pdb", 'charmm36.xml')
-    print("construction of system:", -t0 + time.time(), "sec")
+    print("construction of a system:", -t0 + time.time(), "sec")
     t0 = time.time()
     s = 0
     time_full = 0
@@ -54,7 +54,7 @@ def test_3():
     create_system(path)
     t0 = time.time()
     drs = DRSystem("../output/tmp_system.pdb", 'charmm36.xml')
-    print("construction of system:", -t0 + time.time(), "sec")
+    print("construction of a system:", -t0 + time.time(), "sec")
     t0 = time.time()
     coordinates = drs.get_position()
     time_full = 0
@@ -85,7 +85,7 @@ def test_4():
     create_system(path)
     t0 = time.time()
     drs = DRSystem("../output/tmp_system.pdb", 'charmm36.xml')
-    print("construction of system:", -t0 + time.time(), "sec")
+    print("construction of a system:", -t0 + time.time(), "sec")
     t = np.array([1.0, -2., 0.])
     r = np.identity(3, dtype = float)
     drs.set_rigid(t, r)
@@ -134,12 +134,12 @@ def test_12():
     t = np.array([1.0, -2., 0.])
     r = rotation_matrix(0, 0, 90)
     nmw.set_rigid(t, r)
-    pdy.showProtein(drs._ligand, A='green', width=1)
+    pdy.showProtein(drs._refine_prot, A='green', width=1)
     nmw.set_rigid(np.array([0, 0,  0]), rotation_matrix(0, 0, 90))
     init_pos = drs.get_init_position()
     curr_pos = drs.get_position()
-    pdy.showProtein(drs._ligand_init, A='blue', linewidth=1)
-    pdy.showProtein(drs._ligand, A='red', width=1)
+    pdy.showProtein(drs._refine_prot_init, A='blue', linewidth=1)
+    pdy.showProtein(drs._refine_prot, A='red', width=1)
     pylab.show()
     for i in range(len(init_pos)):
         print("offset:", curr_pos[i] - init_pos[i])
@@ -164,7 +164,7 @@ def test():
 
 
 if __name__ == "__main__":
-    test()
+    test_12()
     # a = np.array([[1, 0], [0, 1]])
     # b = np.reshape(a, (4, ))
     # b[0] = 3

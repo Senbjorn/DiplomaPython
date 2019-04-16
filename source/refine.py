@@ -56,8 +56,7 @@ def create_system(path, tmp_file="../output/tmp_system.pdb", forcefield_name="ch
     time0 = time.time()
     forcefield = app.ForceField(forcefield_name)
     modeller = app.Modeller(omm_object.getTopology(), omm_object.getPositions())
-    modeller.addHydrogens()
-    # modeller.addExtraParticles(forcefield=forcefield)
+    modeller.addHydrogens(forcefield=forcefield)
     print("add hydrogens and extra particles(openmm):", time.time() - time0, "sec")
     time0 = time.time()
     with open(tmp_file, mode='w') as inputfile:
@@ -69,32 +68,36 @@ def create_system(path, tmp_file="../output/tmp_system.pdb", forcefield_name="ch
 class DRSystem:
     # PDY
     _pdy_protein_init = None
-    _ligand_init = None
-    _ligand = None
-    _substrate_init = None
+    _refine_prot_init = None
+    _refine_prot = None
+    _static_prot_init = None
     # OMM
     _omm_protein = None
     _simulation = None
     _center = None
 
-    def __init__(self, pdb_file, forcefield_name):
+    def __init__(self, pdb_file, forcefield_name, refine="chain A", static="chain B"):
         """
-        Creates a new system for docking refinement.
+        Creates a new system for refinement.
         @param pdb_file: path to a file containing system from which different samples are produced.
-        Chain A is a ligand to refine. Chain B is a substrate. Note that it should meet
+        Chain A is a protein to refine. Chain B is a substrate. Note that it should meet
         all forcefield requirements such as hydrogens etc.
         @type pdb_file: str
         @param forcefield_name: name of forcefiled which is necessary to calculate force vector and energy.
         @type forcefield_name: str
+        @param refine: atom selection to refine.
+        @type refine: str
+        @param static: atom selection which is to be static. Should be disjoint with refine selection.
+        @type static: str
         """
 
         self._pdy_protein_init = pdy.parsePDB(pdb_file)
         self._omm_protein = app.PDBFile(pdb_file)
-        self._ligand = self._pdy_protein_init.select("chain A").copy()
-        self._ligand_init = self._pdy_protein_init.select("chain A")
-        self._substrate_init = self._pdy_protein_init.select("chain B")
-        self._center = pdy.calcCenter(self._ligand, weights=self._ligand.getMasses())
-        self._center_init = pdy.calcCenter(self._ligand_init, weights=self._ligand_init.getMasses())
+        self._refine_prot = self._pdy_protein_init.select(refine).copy()
+        self._refine_prot_init = self._pdy_protein_init.select(refine)
+        self._static_prot_init = self._pdy_protein_init.select(static)
+        self._center = pdy.calcCenter(self._refine_prot, weights=self._refine_prot.getMasses())
+        self._center_init = pdy.calcCenter(self._refine_prot_init, weights=self._refine_prot_init.getMasses())
 
         # OpenMM System
         forcefield = app.ForceField(forcefield_name)
@@ -121,7 +124,7 @@ class DRSystem:
         @return: initial position of the ligand as an array of 3d coordinates in angstrom.
         @rtype: numpy.ndarray
         """
-        return self._ligand_init.getCoords()
+        return self._refine_prot_init.getCoords()
 
     def get_position(self):
         """
@@ -129,8 +132,7 @@ class DRSystem:
         @return: position of the ligand as an array of 3d coordinates in angstrom.
         @rtype: numpy.ndarray
         """
-        return self._ligand.getCoords()
-
+        return self._refine_prot.getCoords()
 
     def set_position(self, new_position):
         """
@@ -138,41 +140,39 @@ class DRSystem:
         @param new_position: new ligand position in angstrom.
         @type new_position: numpy.ndarray
         """
-        self._ligand.setCoords(new_position)
-        iterator = self._ligand.iterAtoms()
+        self._refine_prot.setCoords(new_position)
+        iterator = self._refine_prot.iterAtoms()
         i = 0
         for atom in iterator:
             self._omm_protein.positions[atom.getIndex()] = omm.Vec3(*new_position[i]) * nanometer / 10
             i += 1
         self._simulation.context.setPositions(self._omm_protein.positions)
 
-    def get_ligand(self):
+    def get_refine_prot(self):
         """
         Get ligand.
         @return: ligand object.
         @rtype: ProDy.AtomGroup
         """
-        return self._ligand
-
+        return self._refine_prot
 
     def get_energy(self):
         """
-       Calculates energy of the whole system.
-       @return: energy value in kDJ/mol.
-       @rtype: float
-       """
+        Calculates energy of the whole system.
+        @return: energy value in kDJ/mol.
+        @rtype: float
+        """
         state = self._simulation.context.getState(getEnergy=True)
         return state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
 
     def get_force(self):
         """
-       Calculates force vector that acts upon ligand.
-       @return: force vector in kJ/mole/nm.
-       @rtype: numpy.ndarray
-       """
+        Calculates force vector that acts upon a protein to be refined.
+        @return: force vector in kJ/mole/nm.
+        @rtype: numpy.ndarray
+        """
         state = self._simulation.context.getState(getForces=True)
         return np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
-
 
     def set_rigid(self, t, r):
         """
@@ -214,7 +214,7 @@ class NMSpaceWrapper:
         self._position = np.zeros(n_modes)
         self._system = drs
         self._anm = pdy.ANM('anm')
-        self._anm.buildHessian(self._system.get_ligand())
+        self._anm.buildHessian(self._system.get_refine_prot())
         self._anm.calcModes(n_modes=n_modes, zeros=False)
         self._modes_init = self._anm.getEigvecs().copy().T
         self._modes = self._anm.getEigvecs().copy().T
@@ -230,8 +230,8 @@ class NMSpaceWrapper:
 
     def set_position(self, new_position):
         """
-        Updates ligand position in NM space.
-        @param new_position: new ligand position in NM space.
+        Updates protein position in NM space.
+        @param new_position: new protein position in NM space.
         @type new_position: numpy.ndarray
         """
         self._position = new_position
@@ -288,3 +288,31 @@ class NMSpaceWrapper:
         @rtype: numpy.ndarray
         """
         return self._eigenvalues
+
+
+def confined_gradient_descent(
+        nmw, initial_step=1.0, fold_parameter=0.9, termination="growth",
+        absolute_bound=float("inf"), relative_bound=7.0, max_iter=100, return_traj=False):
+    """
+    Performs gradient descent of a system with respect to a special confinement.
+
+    @param nmw: system to optimize.
+    @type nmw: NMSpaceWrapper
+    @param initial_step: initial step.
+    @type: float
+    @param fold_parameter: fold step when choosing optimal step.
+    @type fold_parameter: float
+    @param termination: tremination condition.
+    @type termination: str
+    @param absolute_bound: maximum rmsd between inital state and any intermediate state.
+    @param relative_bound: maximum rmsd between actual state and the next.
+    @param max_iter: maximum number of iterations
+    @type max_iter: int
+    @param return_traj: if true all intermediate states and energies are returned. Otherwise, only final state and energy
+    @type return_traj: bool
+    @return: dictionary containing all the results.
+        "states" - list of all states obtained.
+        "values" - list of all energies obtained.
+    @rtype: dict
+    """
+    pass
