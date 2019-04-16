@@ -290,9 +290,18 @@ class NMSpaceWrapper:
         return self._eigenvalues
 
 
+def init_rapid_rmsd(nmw):
+    pass
+
+
+def save_trajectory(states, output_path):
+    pass
+
+
 def confined_gradient_descent(
         nmw, initial_step=1.0, fold_parameter=0.9, termination="growth",
         absolute_bound=float("inf"), relative_bound=7.0, max_iter=100, return_traj=False):
+
     """
     Performs gradient descent of a system with respect to a special confinement.
 
@@ -315,4 +324,5 @@ def confined_gradient_descent(
         "values" - list of all energies obtained.
     @rtype: dict
     """
+
     pass
