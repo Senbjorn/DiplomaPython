@@ -93,6 +93,7 @@ class DRSystem:
 
         self._pdy_protein_init = pdy.parsePDB(pdb_file)
         self._omm_protein = app.PDBFile(pdb_file)
+        print(len(self._pdy_protein_init.select(refine)), len(self._pdy_protein_init.select(static)))
         self._refine_prot = self._pdy_protein_init.select(refine).copy()
         self._refine_prot_init = self._pdy_protein_init.select(refine)
         self._static_prot_init = self._pdy_protein_init.select(static)
@@ -172,7 +173,14 @@ class DRSystem:
         @rtype: numpy.ndarray
         """
         state = self._simulation.context.getState(getForces=True)
-        return np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
+        all_forces = np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
+        iterator = self._refine_prot.iterAtoms()
+        i = 0
+        forces = []
+        for atom in iterator:
+            forces.append(all_forces[atom.getIndex()])
+            i += 1
+        return np.array(forces)
 
     def set_rigid(self, t, r):
         """
@@ -213,6 +221,7 @@ class NMSpaceWrapper:
         """
         self._position = np.zeros(n_modes)
         self._system = drs
+        self._refine_prot_init = self._system._refine_prot.copy()
         self._anm = pdy.ANM('anm')
         self._anm.buildHessian(self._system.get_refine_prot())
         self._anm.calcModes(n_modes=n_modes, zeros=False)
@@ -223,7 +232,7 @@ class NMSpaceWrapper:
     def get_position(self):
         """
         Returns current position in NM space.
-        @return: position of the ligand as an m-d vector from NM space.
+        @return: position of the protein as an m-d vector from NM space.
         @rtype: numpy.ndarray
         """
         return self._position
@@ -235,8 +244,18 @@ class NMSpaceWrapper:
         @type new_position: numpy.ndarray
         """
         self._position = new_position
-        atom_position = self._system.get_position() + np.dot(self._modes, self._position)
+        old_atom_position = self._refine_prot_init.getCoords()
+        atom_position = old_atom_position +\
+                        np.dot(self._modes.T, self._position).reshape((len(old_atom_position), 3))
         self._system.set_position(atom_position)
+
+    def get_system_position(self):
+        """
+        Returns current coordinates
+        @return: coordinates of protein atoms as an array of 3d coordinates.
+        @rtype: numpy.ndarray
+        """
+        return self._system.get_position()
 
     def get_energy(self):
         """
@@ -300,8 +319,7 @@ def save_trajectory(states, output_path):
 
 def confined_gradient_descent(
         nmw, fold_parameter=0.9, termination="growth",
-        absolute_bound=float("inf"), relative_bound=7.0, max_iter=100, return_traj=False):
-
+        absolute_bound=float("inf"), relative_bound=7.0, etol=1, n_samples=10, max_iter=100, return_traj=False):
     """
     Performs gradient descent of a system with respect to a special confinement.
 
@@ -309,10 +327,14 @@ def confined_gradient_descent(
     @type nmw: NMSpaceWrapper
     @param fold_parameter: fold step when choosing optimal step.
     @type fold_parameter: float
-    @param termination: tremination condition.
+    @param termination: termination condition.
     @type termination: str
     @param absolute_bound: maximum rmsd between inital state and any intermediate state.
     @param relative_bound: maximum rmsd between actual state and the next.
+    @param etol: terminates when |E(i+1) - E(i)| < etol
+    @type etol: float
+    @param n_samples: maximum number of iterations while optimizing energy along a gradient.
+    @type n_samples: int
     @param max_iter: maximum number of iterations
     @type max_iter: int
     @param return_traj: if true all intermediate states and energies are returned. Otherwise, only final state and energy
@@ -323,6 +345,82 @@ def confined_gradient_descent(
     @rtype: dict
     """
 
+    # number of modes
+    m = len(nmw.get_eigenvalues())
 
+    # number of atoms
+    n = len(nmw.get_system_position())
 
-    pass
+    # modes
+    modes = nmw.get_modes()
+
+    # special values
+    r_bound_value = n * relative_bound ** 2
+    a_bound_value = n * absolute_bound ** 2
+
+    # initial state
+    iteration_count = 0
+    states = []
+    energies = []
+
+    anti_gradient = None
+
+    energy_init = nmw.get_energy()
+
+    position_init = nmw.get_position().copy()
+
+    energies.append(energy_init)
+    states.append(nmw.get_system_position().copy())
+    # main cycle
+    while True:
+        # it is a weighted anti-gradient!
+        anti_gradient = nmw.get_force().copy()
+
+        # find a step
+        a = np.dot(anti_gradient, anti_gradient)
+        upper_bound = (r_bound_value / a) ** 0.5
+        lower_bound = 0
+        print("bounds:", lower_bound, ";", upper_bound)
+
+        # find optimal step
+        folds = np.zeros((n_samples,))
+        eng = np.ones((n_samples,)) * float("inf")
+        folds[0] = 1
+        nmw.set_position(folds[0] * upper_bound * anti_gradient + position_init)
+        eng[0] = nmw.get_energy()
+        for i in range(1, n_samples):
+            folds[i] = folds[i - 1] * fold_parameter
+            if folds[i] * upper_bound <= lower_bound:
+                break
+            nmw.set_position(folds[i] * upper_bound * anti_gradient + position_init)
+            eng[i] = nmw.get_energy()
+            if energy_init > eng[i] > eng[i - 1]:
+                break
+
+        # update state list
+        j = np.argmin(eng)
+        nmw.set_position(folds[j] * upper_bound * anti_gradient + position_init)
+        states.append(nmw.get_system_position().copy())
+        energies.append(eng[j])
+
+        iteration_count += 1
+        if termination == "growth":
+            if energy_init < eng[j]:
+                states.pop()
+                energies.pop()
+                break
+        elif termination == "etol":
+            if abs(eng[j] - energy_init) < etol:
+                break
+        else:
+            raise ValueError(f"Wrong termination criterion: {termination}")
+        if iteration_count >= max_iter:
+            break
+
+        position_init = folds[j] * upper_bound * anti_gradient + position_init
+        energy_init = eng[j]
+
+    if not return_traj:
+        return {"states": states[-1:], "energies": energies[-1:]}
+    else:
+        return {"states": states, "energies": energies}

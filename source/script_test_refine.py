@@ -1,5 +1,6 @@
 import pylab
 from refine import *
+import project
 
 
 # Unit
@@ -147,6 +148,30 @@ def test_12():
     print("END TEST 12")
 
 
+def test_21():
+    print("START TEST 21")
+    path = str((project.data_path / "may_complex") / "1dfj.pdb")
+    print(path)
+    create_system(path, tmp_file=str(project.output_path / "tmp_system.pdb"))
+    t0 = time.time()
+    drs = DRSystem(str(project.output_path / "tmp_system.pdb"), 'charmm36.xml', refine="chain A", static="chain B")
+    print("construction of system:", -t0 + time.time(), "sec")
+    t0 = time.time()
+    nmw1 = NMSpaceWrapper(drs, n_modes=10)
+    print("INIT ENERGY:", nmw1.get_energy())
+
+    # random noise
+    nmw1.set_position(np.random.normal(0.0, 2, 10))
+    print("RANDOM ENERGY:", nmw1.get_energy())
+    nmw2 = NMSpaceWrapper(drs, n_modes=6)
+    optimized = confined_gradient_descent(nmw2)
+    print("FINAL ENERGY:", optimized["energies"])
+
+    print("construction of NM wrapper:", -t0 + time.time(), "sec")
+    print("OK")
+    print("END TEST 21")
+
+
 def test():
     path_a = "../output/6awr_chainA_prep.pdb"
     path_b = "../output/6awr_chainB_prep.pdb"
@@ -164,7 +189,8 @@ def test():
 
 
 if __name__ == "__main__":
-    test_12()
+    project.setup()
+    test_21()
     # a = np.array([[1, 0], [0, 1]])
     # b = np.reshape(a, (4, ))
     # b[0] = 3
