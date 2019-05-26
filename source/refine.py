@@ -1,4 +1,5 @@
 import numpy as np
+import quaternion
 import time
 
 # MDTraj
@@ -381,9 +382,17 @@ def rmsd(a1, a2, w):
     return np.sum(w * ((a1 - a2) ** 2).T / len(a1)) ** 0.5
 
 
+def compute_torque():
+    pass
+
+
+def compute_projection():
+    pass
+
+
 def confined_gradient_descent(
-        nmw, decrement=0.9, termination="growth",
-        absolute_bound=float("inf"), relative_bounds=(0.01, 7.0), etol=1, max_iter=100, return_traj=False):
+        nmw, decrement=0.9, relative_bounds_r=(0.01, 7.0), relative_bounds_s=(0.01, 0.5),
+        max_iter=100, save_path=False):
     """
     Performs gradient descent of a system with respect to a special confinement.
 
@@ -391,19 +400,15 @@ def confined_gradient_descent(
     @type nmw: NMSpaceWrapper
     @param decrement: fold step when choosing optimal step.
     @type decrement: float
-    @param termination: termination condition.
-    @type termination: str
-    @param absolute_bound: maximum rmsd between inital state and any intermediate state.
-    @type absolute_bound: float
-    @param relative_bounds: minimum and maximum rmsd between actual intermediate state and the next one.
-    @type relative_bounds: tuple
-    @param etol: terminates when |E(i+1) - E(i)| < etol
-    @type etol: float
+    @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid).
+    @type relative_bounds_r: tuple
+    @param relative_bounds_s: minimum and maximum rmsd between actual intermediate state and the next one (modes).
+    @type relative_bounds_s: tuple
     @param max_iter: maximum number of iterations
     @type max_iter: int
-    @param return_traj: if true all intermediate states, energies and forces are returned.
+    @param save_path: if true all intermediate states, energies and forces are returned.
         Otherwise, the function returns only final record.
-    @type return_traj: bool
+    @type save_path: bool
     @return: dictionary containing all the results.
         "states" - list of all states along optimization path.
         "energies" - list of all energies along optimization path.
@@ -412,110 +417,27 @@ def confined_gradient_descent(
     @rtype: dict
     """
 
-    # number of modes
-    m = len(nmw.get_eigenvalues())
+    # calculate parameters (fast RMSD)
 
-    # number of atoms
-    n = len(nmw.get_system_position())
+    optimization_result = {
+        "states": [],
+        "energies": [],
+        "forces": [],
+    }
 
-    # modes
-    modes = nmw.get_modes()
+    # TODO get energy
+    energy = None
 
-    # special values
-    ru_bound_value = n * relative_bounds[1] ** 2
-    rl_bound_value = n * relative_bounds[0] ** 2
-    a_bound_value = n * absolute_bound ** 2
-
-    # initial state
-    iteration_count = 0
-    states = []
-    energies = []
-    forces = []
-
-    energy_init = nmw.get_energy()
-
-    position_init = nmw.get_position().copy()
-
-    energies.append(energy_init)
-    states.append(nmw.get_system_position().copy())
-
-    # it is a weighted anti-gradient!
-    anti_gradient = nmw.get_force().copy()
-    forces.append(anti_gradient)
-
-    # main cycle
-    while True:
-        print("\n(main) CYCLE START\n")
-
-        # find a step
-        # relative bound
-        a = np.dot(anti_gradient, anti_gradient)
-        upper_bound = (ru_bound_value / a) ** 0.5
-        lower_bound = (rl_bound_value / a) ** 0.5
-        # absolute bound
-
-
-        # find optimal step
-        dec = [1]
-        eng = []
-        ind = [0]
-
-        # check rmsd
-        nmw.set_position(dec[0] * upper_bound * anti_gradient + position_init)
-
-        eng.append(nmw.get_energy())
-        score = 0
-        while True:
-            dec.append(dec[-1] * decrement)
-            ind.append(ind[-1] + 1)
-            if dec[-1] * upper_bound <= lower_bound:
-                break
-
-            nmw.set_position(dec[-1] * upper_bound * anti_gradient + position_init)
-            eng.append(nmw.get_energy())
-
-            # exit condition
-            if energy_init > eng[-1] > eng[-2]:
-                score += 1
-            elif eng[-1] < eng[-2] or energy_init <= eng[-1]:
-                score = 0
-            if score >= 3:
-                break
-
-        # update state list
-        j = np.argmin(eng)
-        mu = dec[j] * upper_bound * anti_gradient
-
-        # new initial states
-        position_init = mu + position_init
-        energy_init = eng[j]
-        nmw.set_position(position_init)
-
-        # state energy force
-        states.append(nmw.get_system_position().copy())
-        energies.append(eng[j])
-        anti_gradient = nmw.get_force().copy()
-        forces.append(anti_gradient)
-
-        # adaptive upper bound
-        ru_bound_value = min(np.dot(mu, mu) / decrement ** 3, n * relative_bounds[1] ** 2)
-
-        # termination
-        iteration_count += 1
-        if termination == "growth":
-            if energy_init < eng[j]:
-                states.pop()
-                energies.pop()
-                forces.pop()
-                break
-        elif termination == "etol":
-            if abs(eng[j] - energy_init) < etol:
-                break
-        else:
-            raise ValueError(f"Wrong termination criterion: {termination}")
-        if iteration_count >= max_iter:
+    k = 0
+    while k < max_iter:
+        # TODO get gradient
+        gradient = None
+        # TODO compute rigid step
+        # TODO torque and rigid motion
+        # TODO compute smooth step (almost done)
+        # TODO projection and mode motion (almost done)
+        new_energy = None
+        if new_energy < energy:
             break
-    if not return_traj:
-        return {"states": states[-1:], "energies": energies[-1:]}
-    else:
-        return {"states": states, "energies": energies, "forces": forces}
+        k += 1
+    return optimization_result
