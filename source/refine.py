@@ -1,6 +1,9 @@
 import numpy as np
 import time
 
+# MDTraj
+import mdtraj as mdt
+
 # OpenMM
 import simtk.openmm as omm
 import simtk.openmm.app as app
@@ -218,20 +221,22 @@ class NMSpaceWrapper:
     _anm = None
     _position = None
 
-    def __init__(self, drs, n_modes=10):
+    def __init__(self, drs, n_modes=10, cutoff=15):
         """
         Create new wrapper of DRSystem instance. It allows you to operate the system in NM space.
         @param drs: DRSystem instance to wrap.
         @type drs: DRSystem
         @param n_modes: number of modes. Should be less than 3 * NumberOfAtoms - 6.
         @type n_modes: int
+        @param cutoff: interaction cutoff default is 15 A.
+        @type cutoff: float
         """
 
         self._position = np.zeros(n_modes)
         self._system = drs
         self._refine_prot_init = self._system._refine_prot.copy()
         self._anm = pdy.ANM('anm')
-        self._anm.buildHessian(self._system.get_refine_prot())
+        self._anm.buildHessian(self._system.get_refine_prot(), cutoff=cutoff)
         self._anm.calcModes(n_modes=n_modes, zeros=False)
         self._modes_init = self._anm.getEigvecs().copy().T
         self._modes = self._anm.getEigvecs().copy().T
@@ -329,8 +334,34 @@ def init_rapid_rmsd(nmw):
     pass
 
 
-def save_trajectory(states, output_path):
-    pass
+def save_trajectory(drs, states, output_file, tmp_file="../output/tmp_system.pdb", log=None):
+    tmp_file = str(tmp_file)
+    output_file = str(output_file)
+    n_states = len(states)
+    trj = None
+    if log is not None:
+        log.write("Trajectory info:\n" +
+                  f"\tnumber of states: {n_states}\n" +
+                  f"\ttemporary file: {tmp_file}\n" +
+                  f"\touput file: {output_file}\n")
+    for i in range(n_states):
+        drs.set_position(states[i])
+        with open(tmp_file, "w") as input_file:
+            drs._omm_protein.writeFile(positions=drs._omm_protein.positions,
+                                       topology=drs._omm_protein.topology,
+                                       file=input_file)
+        if trj is not None:
+            trj = trj.join(mdt.load(tmp_file))
+        else:
+            trj = mdt.load(tmp_file)
+        if log is not None:
+            if i % 5 == 0:
+                log.write(f"creating trajectory: {100 * (i + 1) / n_states:.1f}%\n")
+    if log is not None:
+        log.write(f"Saving trajectory...\n")
+    trj.save_pdb(output_file)
+    if log is not None:
+        log.write(f"Done!\n")
 
 
 def rmsd(a1, a2, w):
