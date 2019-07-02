@@ -1,6 +1,7 @@
 import numpy as np
 import quaternion
 import time
+import logging
 
 # MDTraj
 import mdtraj as mdt
@@ -12,6 +13,15 @@ from simtk.unit import *
 
 # ProDy
 import prody as pdy
+
+from fast_computation import *
+
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter("%(asctime)s - %(process)s - %(levelname)s - %(name)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
 def rotation_matrix(alpha, beta, gamma):
@@ -331,6 +341,241 @@ class NMSpaceWrapper:
         return self._eigenvalues
 
 
+class ProteinComplex:
+    # protein data
+    _source = None
+    _force_field_name = None
+    _selections = None
+
+    # omm
+    _omm_protein = None
+    _simulation = None
+
+    # pdy
+    _pdy_protein = None
+    _compartments = None
+
+    # cache
+    _force_cached = False
+    _force_cache = None
+
+    _energy_cached = False
+    _energy_cache = None
+
+    def __init__(self, pdb_file, force_field_name, selections):
+        self._source = pdb_file
+        self._force_field_name = force_field_name
+        self._selections = selections
+        self._compartments = []
+        self._pdy_protein = pdy.parsePDB(pdb_file)
+        for selection in selections:
+            self._compartments.append(self._pdy_protein.select(selection))
+
+        self._omm_protein = app.PDBFile(pdb_file)
+        forcefield = app.ForceField(self._force_field_name)
+
+        integrator = omm.LangevinIntegrator(300 * kelvin, 1.0 / picosecond, 2.0 * femtosecond)
+        system = forcefield.createSystem(
+            self._omm_protein.topology,
+            constraints=app.HBonds,
+        )
+        self._simulation = app.Simulation(self._omm_protein.topology, system, integrator)
+        self._simulation.context.setPositions(self._omm_protein.positions)
+
+    def get_coords(self, index):
+        return self._compartments[index].getCoords()
+
+    def set_coords(self, index, new_coords):
+        self._compartments[index].setCoords(new_coords)
+        iterator = self._compartments[index].iterAtoms()
+        i = 0
+        for atom in iterator:
+            self._omm_protein.positions[atom.getIndex()] = omm.Vec3(*new_coords[i]) * nanometer / 10
+            i += 1
+        self._simulation.context.setPositions(self._omm_protein.positions)
+        self._energy_cached = False
+        self._force_cached = False
+
+    def get_force(self, index):
+        if self._force_cached:
+            return self._force_cache
+        state = self._simulation.context.getState(getForces=True)
+        all_forces = np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
+        iterator = self._compartments[index].iterAtoms()
+        i = 0
+        forces = []
+        for atom in iterator:
+            forces.append(all_forces[atom.getIndex()])
+            i += 1
+        self._force_cache = np.array(forces)
+        self._force_cached = True
+        return self._force_cache
+
+    def get_energy(self):
+        if self._energy_cached:
+            return self._energy_cache
+        state = self._simulation.context.getState(getEnergy=True)
+        self._energy_cache = state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
+        self._energy_cached = True
+        return self._energy_cache
+
+    def get_compartment(self, index):
+        return self._compartments[index].copy()
+
+    def copy(self):
+        return ProteinComplex(self._source, self._force_field_name, self._selections)
+
+    def __len__(self):
+        return len(self._compartments)
+
+
+class RestrictionWrapper:
+    _protein_complex = None
+
+    def __init__(self, pc):
+        """
+        @param pc: protein complex data.
+        @type pc: ProteinComplex
+        """
+
+        self._protein_complex = pc
+
+    def set_position(self, index, new_pos):
+        pass
+
+    def get_position(self, index):
+        pass
+
+    def get_force(self, index):
+        pass
+
+    def get_energy(self):
+        pass
+
+    def get_compartment(self, index):
+        pass
+
+    def copy(self):
+        pass
+
+
+class RMRestrictionWrapper(RestrictionWrapper):
+    _positions = []
+    _mode_params = None
+    _modes = []
+    _eigenvalues = []
+    _init_coords = []
+    _c_tensors = []
+    _i_tensors = []
+    _d_tensors = []
+    _f_tensors = []
+    _weights = []
+
+    # cache
+    _forces_cached = None
+    _forces_cache = None
+
+    def __init__(self, pc, mode_params):
+        super().__init__(pc)
+        self._mode_params = mode_params
+
+        # init position
+        self._positions = []
+        for i in range(len(self._protein_complex)):
+            self._positions.append([np.zeros((3,)), np.quaternion(1, 0, 0, 0), np.zeros((mode_params[i]["nmodes"],))])
+
+        # init modes
+        anm = pdy.ANM('anm')
+        for i in range(len(self._protein_complex)):
+            if mode_params[i]["nmodes"] == 0:
+                self._modes.append(None)
+                self._eigenvalues.append(None)
+                continue
+            anm.buildHessian(self._protein_complex.get_compartment(i), cutoff=mode_params[i]["cutoff"])
+            anm.calcModes(n_modes=mode_params[i]["nmodes"], zeros=False)
+            self._modes.append(anm.getEigvecs().copy().T)
+            self._eigenvalues.append(anm.getEigvals().copy())
+
+        # init init_state and tensors
+        for i in range(len(self._protein_complex)):
+            coords = self._protein_complex.get_coords(i)
+            modes = self._modes[i]
+            natoms = len(coords)
+            weights = np.ones((natoms, ))
+            self._weights.append(weights)
+            self._init_coords.append(coords)
+            self._c_tensors.append(build_c_tensor(coords, weights))
+            self._i_tensors.append(build_i_tensor(coords, self._c_tensors[i], weights))
+            if modes is None:
+                self._d_tensors.append(None)
+                self._f_tensors.append(None)
+            else:
+                self._d_tensors.append(build_d_tensor(coords, modes, weights))
+                self._f_tensors.append(build_f_tensor(coords, modes, weights))
+
+    def set_position(self, index, new_pos):
+        self._positions[index] = new_pos
+        position = self._positions[index]
+        trans = position[0]
+        quat = position[1]
+        mode_pos = position[2]
+        init_coords = self._init_coords[index]
+        c_tensor = self._c_tensors[index]
+        natoms = len(init_coords)
+        coords = []
+        modes = self._modes[index]
+        if modes is None:
+            mode_offset = np.zeros((natoms, 3))
+        else:
+            mode_offset = np.dot(mode_pos, modes).reshape((natoms, 3))
+        print(mode_offset)
+        for a in range(natoms):
+            pos = (1 / quat) * (np.quaternion(0, *(init_coords[a] - c_tensor + mode_offset[a])) * quat)
+            pos = quaternion.as_float_array(pos)[1:] + trans + c_tensor
+            coords.append(pos)
+        self._protein_complex.set_coords(index, np.array(coords))
+
+    def get_position(self, index):
+        return [self._positions[index][0].copy(), self._positions[index][1].copy(), self._positions[index][2].copy()]
+
+    def get_force(self, index):
+        coords = self._protein_complex.get_coords(index)
+        force = self._protein_complex.get_force(index)
+        natoms = len(coords)
+        weights = np.ones((natoms, ))
+        w = np.sum(weights, 0)
+        position = self._positions[index]
+        trans = position[0]
+        quat = position[1]
+        mode_pos = position[2]
+        c_tensor = self._c_tensors[index]
+        i_tensor = self._i_tensors[index]
+        d_tensor = self._d_tensors[index]
+        f_tensor = self._f_tensors[index]
+        weights = self._weights[index]
+        modes = self._modes[index]
+        trans_force = np.sum(force, 0)
+        torque = calc_torque(coords, force, c_tensor, weights)
+        rotation_matrix = quaternion.as_rotation_matrix(quat)
+        inertia_tensor = calc_inertia_tensor(rotation_matrix, mode_pos, i_tensor, d_tensor, f_tensor, weights)
+        inertia_tensor = rotation_matrix.dot(inertia_tensor.dot(rotation_matrix.T))
+        quat_force = 0.5 * np.quaternion(0, *np.linalg.inv(inertia_tensor).dot(torque)) * quat
+        mode_force = np.dot(modes, force.reshape((force.shape[0] * 3,)))
+        return [trans_force, quat_force, mode_force]
+
+    def get_energy(self):
+        return self._protein_complex.get_energy()
+
+    def get_compartment(self, index):
+        return self._protein_complex.get_compartment(index)
+
+    def copy(self):
+        pass
+
+    def __len__(self):
+        return len(self._protein_complex)
+
+
 def init_rapid_rmsd(nmw):
     pass
 
@@ -363,31 +608,6 @@ def save_trajectory(drs, states, output_file, tmp_file="../output/tmp_system.pdb
     trj.save_pdb(output_file)
     if log is not None:
         log.write(f"Done!\n")
-
-
-def rmsd(a1, a2, w):
-    """
-    Returns weighted rmsd
-
-    @param a1: first atom group coordinates. Array of size n x 3, where n is number of atoms.
-    @type: numpy.ndarray
-    @param a2: first atom group coordinates. Array of size n x 3, where n is number of atoms.
-    @type: numpy.ndarray
-    @param w: weights. Array of size n.
-    @type: numpy.ndarray
-    @return: weighted rmsd
-    @rtype: float
-    """
-
-    return np.sum(w * ((a1 - a2) ** 2).T / len(a1)) ** 0.5
-
-
-def compute_torque():
-    pass
-
-
-def compute_projection():
-    pass
 
 
 def confined_gradient_descent(

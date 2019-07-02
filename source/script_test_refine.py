@@ -172,6 +172,21 @@ def test_21():
     print("END TEST 21")
 
 
+def test_22():
+    print("START TEST 22")
+    path = str((project.data_path / "may_complex") / "1dfj.pdb")
+    print(path)
+    create_system(path, tmp_file=str(project.output_path / "tmp_system.pdb"))
+    t0 = time.time()
+    pc = ProteinComplex(str(project.output_path / "tmp_system.pdb"), "charmm36.xml", ["chain A", "chain B"])
+    print("construction of system:", -t0 + time.time(), "sec")
+    t0 = time.time()
+    print("atom count (chain A)", len(pc.get_coords(0)))
+    print("atom count (chain B)", len(pc.get_coords(1)))
+    print("INIT ENERGY:", pc.get_energy())
+    print("OK")
+    print("END TEST 22")
+
 def test():
     path_a = "../output/6awr_chainA_prep.pdb"
     path_b = "../output/6awr_chainB_prep.pdb"
@@ -190,7 +205,7 @@ def test():
 
 if __name__ == "__main__":
     project.setup()
-    test_21()
+    test_22()
     # a = np.array([[1, 0], [0, 1]])
     # b = np.reshape(a, (4, ))
     # b[0] = 3
