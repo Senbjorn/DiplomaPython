@@ -400,7 +400,7 @@ class ProteinComplex:
         if self._force_cached:
             return self._force_cache
         state = self._simulation.context.getState(getForces=True)
-        all_forces = np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
+        all_forces = np.array(state.getForces().value_in_unit(kilojoule_per_mole / angstrom))
         iterator = self._compartments[index].iterAtoms()
         i = 0
         forces = []
@@ -528,9 +528,8 @@ class RMRestrictionWrapper(RestrictionWrapper):
             mode_offset = np.zeros((natoms, 3))
         else:
             mode_offset = np.dot(mode_pos, modes).reshape((natoms, 3))
-        print(mode_offset)
         for a in range(natoms):
-            pos = (1 / quat) * (np.quaternion(0, *(init_coords[a] - c_tensor + mode_offset[a])) * quat)
+            pos = quat * (np.quaternion(0, *(init_coords[a] - c_tensor + mode_offset[a])) * (1 / quat))
             pos = quaternion.as_float_array(pos)[1:] + trans + c_tensor
             coords.append(pos)
         self._protein_complex.set_coords(index, np.array(coords))
@@ -542,8 +541,8 @@ class RMRestrictionWrapper(RestrictionWrapper):
         coords = self._protein_complex.get_coords(index)
         force = self._protein_complex.get_force(index)
         natoms = len(coords)
-        weights = np.ones((natoms, ))
-        w = np.sum(weights, 0)
+        weights = self._weights[index]
+        w = np.sum(weights)
         position = self._positions[index]
         trans = position[0]
         quat = position[1]
@@ -558,10 +557,8 @@ class RMRestrictionWrapper(RestrictionWrapper):
         torque = calc_torque(coords, force, c_tensor, weights)
         rotation_matrix = quaternion.as_rotation_matrix(quat)
         inertia_tensor = calc_inertia_tensor(rotation_matrix, mode_pos, i_tensor, d_tensor, f_tensor, weights)
-        inertia_tensor = rotation_matrix.dot(inertia_tensor.dot(rotation_matrix.T))
-        quat_force = 0.5 * np.quaternion(0, *np.linalg.inv(inertia_tensor).dot(torque)) * quat
         mode_force = np.dot(modes, force.reshape((force.shape[0] * 3,)))
-        return [trans_force, quat_force, mode_force]
+        return [trans_force, torque, inertia_tensor, mode_force]
 
     def get_energy(self):
         return self._protein_complex.get_energy()
@@ -574,10 +571,6 @@ class RMRestrictionWrapper(RestrictionWrapper):
 
     def __len__(self):
         return len(self._protein_complex)
-
-
-def init_rapid_rmsd(nmw):
-    pass
 
 
 def save_trajectory(drs, states, output_file, tmp_file="../output/tmp_system.pdb", log=None):
@@ -611,13 +604,13 @@ def save_trajectory(drs, states, output_file, tmp_file="../output/tmp_system.pdb
 
 
 def confined_gradient_descent(
-        nmw, decrement=0.9, relative_bounds_r=(0.01, 7.0), relative_bounds_s=(0.01, 0.5),
+        rw, decrement=0.9, relative_bounds_r=(0.01, 7.0), relative_bounds_s=(0.01, 0.5),
         max_iter=100, save_path=False):
     """
-    Performs gradient descent of a system with respect to a special confinement.
+    Performs gradient descent with respect to a special confinement.
 
-    @param nmw: system to optimize.
-    @type nmw: NMSpaceWrapper
+    @param rw: system to optimize.
+    @type rw: RMRestrictionWrapper
     @param decrement: fold step when choosing optimal step.
     @type decrement: float
     @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid).
@@ -637,27 +630,58 @@ def confined_gradient_descent(
     @rtype: dict
     """
 
-    # calculate parameters (fast RMSD)
-
     optimization_result = {
         "states": [],
         "energies": [],
         "forces": [],
     }
 
-    # TODO get energy
-    energy = None
+    optimization_result["states"].append(rw.get_position(0))
+    optimization_result["energies"].append(rw.get_energy())
+    optimization_result["forces"].append(rw.get_force(0))
 
     k = 0
     while k < max_iter:
-        # TODO get gradient
-        gradient = None
+        position = optimization_result["states"][-1]
+        energy = optimization_result["energies"][-1]
+        force = optimization_result["forces"][-1]
+
+        f_trans = force[0]
+        torque = force[1]
+        inertia_inv = np.linalg.inv(force[2])
+        f_modes = force[3]
+        w = np.sum(rw._weights[0])
+
+        iinv_t = inertia_inv.dot(torque)
+        iinv_t24 = iinv_t.dot(iinv_t) / 4
+        ft24w = f_trans.dot(f_trans) / 4 / w
+        tit = torque.dot(iinv_t)
+        wrmsd20 = w * relative_bounds_r[0] ** 2
+        wrmsd21 = w * relative_bounds_r[1] ** 2
+        a = ft24w * iinv_t24
+        b0 = ft24w + tit - wrmsd20 * iinv_t24
+        c0 = -wrmsd20
+        b1 = ft24w + tit - wrmsd21 * iinv_t24
+        c1 = -wrmsd21
+        roots0 = np.roots([a, b0, c0])
+        roots1 = np.roots([a, b1, c1])
+        tau0 = np.max(roots0) ** 0.25
+        tau1 = np.max(roots1) ** 0.25
+        print("tau:", tau0, tau1)
+
+        mcoeff = (4 * w / f_modes.dot(f_modes)) ** 0.25
+        mtau0 = relative_bounds_s[0] ** 0.5 * mcoeff
+        mtau1 = relative_bounds_s[1] ** 0.5 * mcoeff
+        print("mtau:", mtau0, mtau1)
+
         # TODO compute rigid step
         # TODO torque and rigid motion
         # TODO compute smooth step (almost done)
         # TODO projection and mode motion (almost done)
-        new_energy = None
-        if new_energy < energy:
+        optimization_result["states"].append(rw.get_position(0))
+        optimization_result["energies"].append(rw.get_energy())
+        optimization_result["forces"].append(rw.get_force(0))
+        if optimization_result["energies"][-2] < optimization_result["energies"][-1]:
             break
         k += 1
     return optimization_result

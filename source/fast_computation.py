@@ -91,7 +91,7 @@ def rmsd(a1, a2, w):
     @rtype: float
     """
 
-    return np.sum(w * ((a1 - a2) ** 2).T / len(a1)) ** 0.5
+    return np.sum(w * ((a1 - a2) ** 2).T / np.sum(w)) ** 0.5
 
 
 def fast_rmsd():
