@@ -41,7 +41,7 @@ def self_alignment(residues, pdb_file, sequence_file, alignment_file='../output/
 
     # initialize missing residue set as all residue indices
     missing_residues = set(range(1, len(target_sequence) + 1))
-    # remove residues presented in structure
+    # remove residues presented in the structure
     for r in structure.iterResidues():
         missing_residues.remove(r.getResnum())
     # add residues of interest

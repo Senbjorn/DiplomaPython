@@ -2,6 +2,7 @@ import numpy as np
 import quaternion
 import time
 import logging
+from enum import Enum
 
 # MDTraj
 import mdtraj as mdt
@@ -14,12 +15,13 @@ from simtk.unit import *
 # ProDy
 import prody as pdy
 
+import project
 from fast_computation import *
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler()
 handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s - %(process)s - %(levelname)s - %(name)s")
+formatter = logging.Formatter("%(levelname)s - %(name)s - %(message)s") #%(asctime)s - %(process)s -
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
@@ -51,30 +53,30 @@ def rotation_matrix(alpha, beta, gamma):
     return rx.dot(ry).dot(rz)
 
 
-def create_system(path, tmp_file="../output/tmp_system.pdb", forcefield_name="charmm36.xml"):
+def create_system(path, output_path="../output/tmp_system.pdb", forcefield_name="charmm36.xml"):
     """
     Creates system as .pdb file containing appropriate configuration for DRSystem.
     @param path:  path to .pdb file with initial system.
     @type path: str
-    @param tmp_file: a file containing new system.
-    @type tmp_file: str
+    @param output_path: a file containing new system.
+    @type output_path: str
     """
     pdy_protein = pdy.parsePDB(path)
     pdy_protein = pdy_protein.select("protein")
     time0 = time.time()
-    pdy.writePDB(tmp_file, pdy_protein)
+    pdy.writePDB(output_path, pdy_protein)
     print("write PDB(prody): {0:.4f} sec".format(time.time() - time0))
     time0 = time.time()
-    omm_object = app.PDBFile(tmp_file)
+    omm_object = app.PDBFile(output_path)
     print("read PDB(openmm):", time.time() - time0, "sec")
     time0 = time.time()
     forcefield = app.ForceField(forcefield_name)
     modeller = app.Modeller(omm_object.getTopology(), omm_object.getPositions())
-    modeller.addHydrogens(forcefield=forcefield)
+    modeller.addHydrogens(forcefield=forcefield, pH=6.4)
     print("add hydrogens and extra particles(openmm):", time.time() - time0, "sec")
     time0 = time.time()
-    with open(tmp_file, mode='w') as inputfile:
-        app.PDBFile.writeFile(modeller.getTopology(), modeller.getPositions(), inputfile)
+    with open(output_path, mode='w') as output_file:
+        app.PDBFile.writeFile(modeller.getTopology(), modeller.getPositions(), output_file)
     print("write PDB(openmm):", time.time() - time0, "sec")
 
 
@@ -153,7 +155,7 @@ class DRSystem:
 
     def set_position(self, new_position):
         """
-        Updates ligand position.
+        Updates ligand position
         @param new_position: new ligand position in angstrom.
         @type new_position: numpy.ndarray
         """
@@ -168,8 +170,8 @@ class DRSystem:
 
     def get_refine_prot(self):
         """
-        Get ligand.
-        @return: ligand object.
+        Get ligand
+        @return: ligand object
         @rtype: ProDy.AtomGroup
         """
 
@@ -177,8 +179,8 @@ class DRSystem:
 
     def get_energy(self):
         """
-        Calculates energy of the whole system.
-        @return: energy value in kDJ/mol.
+        Calculates energy of the whole system
+        @return: energy value in kDJ/mol
         @rtype: float
         """
 
@@ -187,8 +189,8 @@ class DRSystem:
 
     def get_force(self):
         """
-        Calculates force vector that acts upon a protein to be refined.
-        @return: force vector in kJ/mole/nm.
+        Calculates force vector that acts upon a protein to be refined
+        @return: force vector in kJ/mole/nm
         @rtype: numpy.ndarray
         """
 
@@ -204,10 +206,10 @@ class DRSystem:
 
     def set_rigid(self, t, r):
         """
-        Translates initial system by vector t and rotates via rotation operator r.
-        @param t: translation vector t.
+        Translates initial system by vector t and rotates via rotation operator r
+        @param t: translation vector t
         @type t: np.ndarray
-        @param r: rotation operator.
+        @param r: rotation operator
         @type r: np.ndarray
         """
 
@@ -342,7 +344,14 @@ class NMSpaceWrapper:
 
 
 class ProteinComplex:
+    """
+    A protein complex class
+
+    """
+
+
     # protein data
+    _cid = None
     _source = None
     _force_field_name = None
     _selections = None
@@ -362,7 +371,8 @@ class ProteinComplex:
     _energy_cached = False
     _energy_cache = None
 
-    def __init__(self, pdb_file, force_field_name, selections):
+    def __init__(self, pdb_file, force_field_name, selections, cid="unknown"):
+        self._cid = cid
         self._source = pdb_file
         self._force_field_name = force_field_name
         self._selections = selections
@@ -430,6 +440,11 @@ class ProteinComplex:
 
 
 class RestrictionWrapper:
+    """
+    Base interface for wrappers
+
+    """
+
     _protein_complex = None
 
     def __init__(self, pc):
@@ -460,16 +475,22 @@ class RestrictionWrapper:
 
 
 class RMRestrictionWrapper(RestrictionWrapper):
-    _positions = []
+    """
+    Wraps the original protein complex allowing movement only along normal mode and rigid transformation
+
+    """
     _mode_params = None
-    _modes = []
-    _eigenvalues = []
-    _init_coords = []
-    _c_tensors = []
-    _i_tensors = []
-    _d_tensors = []
-    _f_tensors = []
-    _weights = []
+    _positions = None
+    _anms = None
+    _modes = None
+    _eigenvalues = None
+    _init_coords = None
+    _c_tensors = None
+    _i_tensors = None
+    _d_tensors = None
+    _f_tensors = None
+    _weights = None
+
 
     # cache
     _forces_cached = None
@@ -478,6 +499,16 @@ class RMRestrictionWrapper(RestrictionWrapper):
     def __init__(self, pc, mode_params):
         super().__init__(pc)
         self._mode_params = mode_params
+        self._positions = []
+        self._anms = []
+        self._modes = []
+        self._eigenvalues = []
+        self._init_coords = []
+        self._c_tensors = []
+        self._i_tensors = []
+        self._d_tensors = []
+        self._f_tensors = []
+        self._weights = []
 
         # init position
         self._positions = []
@@ -485,14 +516,25 @@ class RMRestrictionWrapper(RestrictionWrapper):
             self._positions.append([np.zeros((3,)), np.quaternion(1, 0, 0, 0), np.zeros((mode_params[i]["nmodes"],))])
 
         # init modes
-        anm = pdy.ANM('anm')
         for i in range(len(self._protein_complex)):
+
             if mode_params[i]["nmodes"] == 0:
+                self._anms.append(None)
                 self._modes.append(None)
                 self._eigenvalues.append(None)
                 continue
-            anm.buildHessian(self._protein_complex.get_compartment(i), cutoff=mode_params[i]["cutoff"])
+            anm = pdy.ANM(f"{self._protein_complex._cid} {i + 1}")
+
+            tmp_struct_path = str(project.output_path / f"{self._protein_complex._cid}_{i + 1}.pdb")
+            pdy.writePDB(tmp_struct_path, self._protein_complex.get_compartment(i))
+            omm_protein = app.PDBFile(tmp_struct_path)
+            anm.setHessian(surface_hessian(omm_protein, surface_constant=10e+0, cutoff=mode_params[i]["cutoff"],
+                                           depth=4.4))
+
+            # anm.buildHessian(self._protein_complex.get_compartment(i), cutoff=mode_params[i]["cutoff"])
             anm.calcModes(n_modes=mode_params[i]["nmodes"], zeros=False)
+
+            self._anms.append(anm)
             self._modes.append(anm.getEigvecs().copy().T)
             self._eigenvalues.append(anm.getEigvals().copy())
 
@@ -603,48 +645,78 @@ def save_trajectory(drs, states, output_file, tmp_file="../output/tmp_system.pdb
         log.write(f"Done!\n")
 
 
+class CGDMode(Enum):
+    FLEXIBLE = 1
+    RIGID = 2
+    BOTH = 3
+
+
 def confined_gradient_descent(
-        rw, decrement=0.9, relative_bounds_r=(0.01, 7.0), relative_bounds_s=(0.01, 0.5),
-        max_iter=100, save_path=False):
+        rw, decrement=0.9, relative_bounds_r=(0.01, 3), relative_bounds_s=(0.01, 0.5),
+        max_iter=100, save_path=False, extended_result=False, log=False, mode=CGDMode.BOTH):
     """
-    Performs gradient descent with respect to a special confinement.
+    Performs gradient descent with respect to a special confinement
+
 
     @param rw: system to optimize.
     @type rw: RMRestrictionWrapper
-    @param decrement: fold step when choosing optimal step.
+    @param decrement: fold step when choosing optimal step
     @type decrement: float
-    @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid).
+    @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid)
     @type relative_bounds_r: tuple
-    @param relative_bounds_s: minimum and maximum rmsd between actual intermediate state and the next one (modes).
+    @param relative_bounds_s: minimum and maximum rmsd between actual intermediate state and the next one (modes)
     @type relative_bounds_s: tuple
     @param max_iter: maximum number of iterations
     @type max_iter: int
     @param save_path: if true all intermediate states, energies and forces are returned.
-        Otherwise, the function returns only final record.
+        Otherwise, the function returns only final record
     @type save_path: bool
+    @param extended_result: if true additional information is returned
+    @type extended_result: bool
+    @param log: if true a log will be printed to the console
+    @type log: bool
+    @param mode: there are three modes RIGID, FLEXIBLE and BOTH
+    @type mode: CGDMode
     @return: dictionary containing all the results.
-        "states" - list of all states along optimization path.
-        "energies" - list of all energies along optimization path.
-        "forces" - list of all forces along optimization path.
-        If return_traj is false returns only last record.
+        "states" - list of all states along optimization path
+        "energies" - list of all energies along optimization path
+        "forces" - list of all forces along optimization path
+        If return_traj is false returns only last record
     @rtype: dict
     """
+    if log:
+        logger.setLevel(logging.INFO)
+    else:
+        logger.setLevel(logging.ERROR)
 
+    logger.info("INITIALIZATION SATGE")
     optimization_result = {
-        "states": [],
+        "positions": [],
         "energies": [],
         "forces": [],
+        "coords": [],
+        "success": True,
     }
 
-    optimization_result["states"].append(rw.get_position(0))
+    optimization_result["positions"].append(rw.get_position(0))
     optimization_result["energies"].append(rw.get_energy())
     optimization_result["forces"].append(rw.get_force(0))
+    optimization_result["coords"].append(rw._protein_complex.get_coords(0))
+
+    if extended_result:
+        optimization_result["translation_diff"] = []
+        optimization_result["rotation_diff"] = []
+        optimization_result["mode_diff"] = []
+        optimization_result["rigid_rmsd"] = []
+        optimization_result["flexible_rmsd"] = []
 
     k = 0
     while k < max_iter:
-        position = optimization_result["states"][-1]
+        logger.info(f"ITERATION {k} START")
+        position = optimization_result["positions"][-1]
         energy = optimization_result["energies"][-1]
         force = optimization_result["forces"][-1]
+        coords = optimization_result["coords"][-1]
 
         f_trans = force[0]
         torque = force[1]
@@ -667,21 +739,255 @@ def confined_gradient_descent(
         roots1 = np.roots([a, b1, c1])
         tau0 = np.max(roots0) ** 0.25
         tau1 = np.max(roots1) ** 0.25
-        print("tau:", tau0, tau1)
+        logger.info(f"tau: {tau0}, {tau1}")
 
         mcoeff = (4 * w / f_modes.dot(f_modes)) ** 0.25
         mtau0 = relative_bounds_s[0] ** 0.5 * mcoeff
         mtau1 = relative_bounds_s[1] ** 0.5 * mcoeff
-        print("mtau:", mtau0, mtau1)
+        logger.info(f"mtau: {mtau0}, {mtau1}")
 
-        # TODO compute rigid step
-        # TODO torque and rigid motion
-        # TODO compute smooth step (almost done)
-        # TODO projection and mode motion (almost done)
-        optimization_result["states"].append(rw.get_position(0))
+        logger.info("LINEAR SEARCH")
+        while (tau1 > tau0 or mode == CGDMode.FLEXIBLE) and (mtau1 > mtau0 or mode == CGDMode.RIGID):
+            tdiff = tau1 ** 2 / w / 2 * f_trans
+            qdiff = np.quaternion(1, *(tau1 ** 2 / 2 * iinv_t))
+            qdiff /= qdiff.norm()
+            mdiff = mtau1 ** 2 / 2 * f_modes
+            trans = position[0]
+            quat = position[1]
+            modes = position[2]
+            if mode == CGDMode.BOTH:
+                trans = tdiff + trans
+                quat = qdiff * quat
+                modes = mdiff + modes
+            elif mode == CGDMode.RIGID:
+                trans = tdiff + trans
+                quat = qdiff * quat
+            elif mode == CGDMode.FLEXIBLE:
+                modes = mdiff + modes
+            new_pos = [trans, quat, modes]
+
+            # rmsd
+            if extended_result:
+                logger.info(f"EXT::tdiff: {tdiff}")
+                logger.info(f"EXT::qdiff: {qdiff}")
+                logger.info(f"EXT::mdiff: {mdiff}")
+                coords1 = coords
+                test_pos = [trans, quat, position[2]]
+                rw.set_position(0, test_pos)
+                coords2 = rw._protein_complex.get_coords(0)
+                weights = rw._weights[0]
+                rrmsd = rmsd(coords1, coords2, weights)
+                logger.info(f"EXT::RRMSD: {rrmsd}")
+                frmsd = ((mdiff.dot(mdiff)) / np.sum(weights)) ** 0.5
+                logger.info(f"EXT::FRMSD: {frmsd}")
+
+            rw.set_position(0, new_pos)
+            new_energy = rw.get_energy()
+            tau1 *= decrement * decrement
+            mtau1 *= decrement * decrement
+            logger.info(f"NEW ENERGY: {new_energy}")
+            if new_energy < energy:
+                break
+        if extended_result:
+            optimization_result["translation_diff"].append(tdiff)
+            optimization_result["rotation_diff"].append(qdiff)
+            optimization_result["mode_diff"].append(mdiff)
+            optimization_result["rigid_rmsd"].append(rrmsd)
+            optimization_result["flexible_rmsd"].append(frmsd)
+
+        logger.info(f"ITERATION {k} END")
         optimization_result["energies"].append(rw.get_energy())
-        optimization_result["forces"].append(rw.get_force(0))
         if optimization_result["energies"][-2] < optimization_result["energies"][-1]:
+            optimization_result["energies"].pop()
+            optimization_result["success"] = False
             break
+        optimization_result["positions"].append(rw.get_position(0))
+        optimization_result["forces"].append(rw.get_force(0))
+        optimization_result["coords"].append(rw._protein_complex.get_coords(0))
+        if not save_path:
+            optimization_result["positions"].pop(0)
+            optimization_result["forces"].pop(0)
+            optimization_result["coords"].pop(0)
+            optimization_result["energies"].pop(0)
         k += 1
     return optimization_result
+
+
+def bound_hessian(omm_protein, bound_constant=10, unbound_constant=1, cutoff=7.5):
+    """
+    Calculates hessian for anisotropic network model where bound interactions are stiffer the unbound
+
+    @param protein: protein
+    @type protein: prody selection
+    @param bound_constant: bound interaction constant
+    @type bound_constant: float
+    @param unbound_constant: unbound interaction constant
+    @type unbound_constant: float
+    @return: hessian matrix
+    """
+
+    n = omm_protein.topology.getNumAtoms()
+    hessian_matrix = np.zeros((3 * n, 3 * n))
+    bondedTo = {a.index: set() for a in omm_protein.topology.atoms()}
+    positions = omm_protein.getPositions().value_in_unit(angstrom)
+    for bond in omm_protein.topology.bonds():
+        index1 = bond.atom1.index
+        index2 = bond.atom2.index
+        bondedTo[index1].add(index2)
+        bondedTo[index2].add(index1)
+    for i, atom1 in enumerate(omm_protein.topology.atoms()):
+        for j, atom2 in enumerate(omm_protein.topology.atoms()):
+            if i == j:
+                continue
+            pos1 = positions[atom1.index]
+            pos2 = positions[atom2.index]
+            rij = np.linalg.norm(pos2 - pos1)
+            if rij >= cutoff:
+                continue
+            if atom2.index in bondedTo[atom1.index]:
+                k = -bound_constant / rij ** 2
+            else:
+                k = -unbound_constant / rij ** 2
+            for a in range(3):
+                for b in range(3):
+                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+    return hessian_matrix
+
+
+def hydrogen_hessian(omm_protein, hydrogen_constant=10, heavy_constant=1, cutoff=7.5):
+    n = omm_protein.topology.getNumAtoms()
+    hessian_matrix = np.zeros((3 * n, 3 * n))
+    positions = omm_protein.getPositions().value_in_unit(angstrom)
+    for i, atom1 in enumerate(omm_protein.topology.atoms()):
+        for j, atom2 in enumerate(omm_protein.topology.atoms()):
+            if i == j:
+                continue
+            pos1 = positions[atom1.index]
+            pos2 = positions[atom2.index]
+            rij = np.linalg.norm(pos2 - pos1)
+            if rij >= cutoff:
+                continue
+            if atom2.element == app.element.hydrogen or atom1.element == app.element.hydrogen:
+                print("cool!")
+                k = -hydrogen_constant / rij ** 2
+            else:
+                k = -heavy_constant / rij ** 2
+            for a in range(3):
+                for b in range(3):
+                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+    return hessian_matrix
+
+
+def surface_hessian(omm_protein, surface_constant=10.0, internal_constant=1, cutoff=7.5, depth=4.5):
+    n = omm_protein.topology.getNumAtoms()
+    hessian_matrix = np.zeros((3 * n, 3 * n))
+    surface_factors = np.zeros((n,))
+    positions = omm_protein.getPositions().value_in_unit(angstrom)
+    ps, _ = find_surface(omm_protein, grid_step=1, depth=depth)
+    ps = set(ps)
+    for i, atom1 in enumerate(omm_protein.topology.atoms()):
+        for j, atom2 in enumerate(omm_protein.topology.atoms()):
+            if i == j:
+                continue
+            pos1 = positions[atom1.index]
+            pos2 = positions[atom2.index]
+            rij = np.linalg.norm(pos2 - pos1)
+            if rij >= cutoff:
+                continue
+            if atom1 in ps and atom2 in ps:
+                k = -surface_constant / rij ** 2
+            else:
+                k = -internal_constant / rij ** 2
+            for a in range(3):
+                for b in range(3):
+                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+    return hessian_matrix
+
+
+def get_points(bounds, step):
+    v = int(bounds[0])
+    points = []
+    while v < bounds[1]:
+        if v > bounds[0]:
+            points.append(v)
+        v += step
+    return points
+
+
+def get_neighbours(point, step):
+    neighbours = []
+    for i in range(3):
+        neighbour = list(point)
+        neighbour[i] += step
+        neighbours.append(tuple(neighbour))
+    for i in range(3):
+        neighbour = list(point)
+        neighbour[i] -= step
+        neighbours.append(tuple(neighbour))
+    return neighbours
+
+
+def find_surface(omm_protein, grid_step=2, depth=5.5):
+    internal_grid = set()
+    atoms = list(omm_protein.topology.atoms())
+    positions = omm_protein.getPositions().value_in_unit(angstrom)
+    for pos in positions:
+        offset = grid_step * 3
+        x_bounds = (pos[0] - offset, pos[0] + offset)
+        y_bounds = (pos[1] - offset, pos[1] + offset)
+        z_bounds = (pos[2] - offset, pos[2] + offset)
+        x_points = get_points(x_bounds, grid_step)
+        y_points = get_points(y_bounds, grid_step)
+        z_points = get_points(z_bounds, grid_step)
+        for x in x_points:
+            for y in y_points:
+                for z in z_points:
+                    internal_grid.add((x, y, z))
+    surface_grid = set()
+    for ip in internal_grid:
+        for neighbour in get_neighbours(ip, grid_step):
+            if neighbour not in internal_grid:
+                surface_grid.add(neighbour)
+
+    protein_surface = []
+    protein_internal = []
+    for i, a in enumerate(atoms):
+        pos = positions[a.index]
+        offset = depth
+        x_bounds = (pos[0] - offset, pos[0] + offset)
+        y_bounds = (pos[1] - offset, pos[1] + offset)
+        z_bounds = (pos[2] - offset, pos[2] + offset)
+        x_points = get_points(x_bounds, grid_step)
+        y_points = get_points(y_bounds, grid_step)
+        z_points = get_points(z_bounds, grid_step)
+        is_surface = False
+        for x in x_points:
+            if is_surface:
+                break
+            for y in y_points:
+                if is_surface:
+                    break
+                for z in z_points:
+                    dist = ((x - pos[0]) ** 2 + (y - pos[1]) ** 2 + (z - pos[2]) ** 2) ** 0.5
+                    if (x, y, z) in surface_grid and dist < depth:
+                        protein_surface.append(a)
+                        is_surface = True
+                        break
+        if not is_surface:
+            protein_internal.append(a)
+    return protein_surface, protein_internal
