@@ -27,299 +27,9 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-def create_system(path, output_path='../output/tmp_system.pdb', forcefield_name='charmm36.xml'):
-    """
-    Creates system as .pdb file containing appropriate configuration for DRSystem.
-    @param path:  path to .pdb file with initial system.
-    @type path: str
-    @param output_path: a file containing new system.
-    @type output_path: str
-    """
-    pdy_protein = pdy.parsePDB(path)
-    pdy_protein = pdy_protein.select('protein')
-    time0 = time.time()
-    pdy.writePDB(output_path, pdy_protein)
-    print('write PDB(prody): {0:.4f} sec'.format(time.time() - time0))
-    time0 = time.time()
-    omm_object = app.PDBFile(output_path)
-    print('read PDB(openmm):', time.time() - time0, 'sec')
-    time0 = time.time()
-    forcefield = app.ForceField(forcefield_name)
-    modeller = app.Modeller(omm_object.getTopology(), omm_object.getPositions())
-    modeller.addHydrogens(forcefield=forcefield, pH=6.4)
-    print('add hydrogens and extra particles(openmm):', time.time() - time0, 'sec')
-    time0 = time.time()
-    with open(output_path, mode='w') as output_file:
-        app.PDBFile.writeFile(modeller.getTopology(), modeller.getPositions(), output_file)
-    print('write PDB(openmm):', time.time() - time0, 'sec')
-
-
-class DRSystem:
-    # PDY
-    _pdy_protein_init = None
-    _refine_prot_init = None
-    _refine_prot = None
-    _static_prot_init = None
-    # OMM
-    _omm_protein = None
-    _simulation = None
-    _center = None
-
-    def __init__(self, pdb_file, forcefield_name, refine='chain A', static='chain B'):
-        """
-        Creates a new system for refinement.
-        @param pdb_file: path to a file containing system from which different samples are produced.
-        Chain A is a protein to refine. Chain B is a substrate. Note that it should meet
-        all forcefield requirements such as hydrogens etc.
-        @type pdb_file: str
-        @param forcefield_name: name of forcefiled which is necessary to calculate force vector and energy.
-        @type forcefield_name: str
-        @param refine: atom selection to refine.
-        @type refine: str
-        @param static: atom selection which is to be static. Should be disjoint with refine selection.
-        @type static: str
-        """
-
-        self._pdy_protein_init = pdy.parsePDB(pdb_file)
-        self._omm_protein = app.PDBFile(pdb_file)
-        print(len(self._pdy_protein_init.select(refine)), len(self._pdy_protein_init.select(static)))
-        self._refine_prot = self._pdy_protein_init.select(refine).copy()
-        self._refine_prot_init = self._pdy_protein_init.select(refine)
-        self._static_prot_init = self._pdy_protein_init.select(static)
-        self._center = pdy.calcCenter(self._refine_prot, weights=self._refine_prot.getMasses())
-        self._center_init = pdy.calcCenter(self._refine_prot_init, weights=self._refine_prot_init.getMasses())
-
-        # OpenMM System
-        forcefield = app.ForceField(forcefield_name)
-        # [templates, residues] = forcefield.generateTemplatesForUnmatchedResidues(self._omm_protein.topology)
-
-        # Set the atom types
-        # for template in templates:
-            # for atom in template.atoms:
-            #     atom.type = ...  # set the atom types here
-            # Register the template with the forcefield.
-            # forcefield.registerResidueTemplate(template)
-
-        integrator = omm.LangevinIntegrator(300 * kelvin, 1.0 / picosecond, 2.0 * femtosecond)
-        system = forcefield.createSystem(
-            self._omm_protein.topology,
-            constraints=app.HBonds,
-        )
-        self._simulation = app.Simulation(self._omm_protein.topology, system, integrator)
-        self._simulation.context.setPositions(self._omm_protein.positions)
-
-    def get_init_position(self):
-        """
-        Returns initial position.
-        @return: initial position of the ligand as an array of 3d coordinates in angstrom.
-        @rtype: numpy.ndarray
-        """
-
-        return self._refine_prot_init.getCoords()
-
-    def get_position(self):
-        """
-        Returns current position.
-        @return: position of the ligand as an array of 3d coordinates in angstrom.
-        @rtype: numpy.ndarray
-        """
-
-        return self._refine_prot.getCoords()
-
-    def set_position(self, new_position):
-        """
-        Updates ligand position
-        @param new_position: new ligand position in angstrom.
-        @type new_position: numpy.ndarray
-        """
-
-        self._refine_prot.setCoords(new_position)
-        iterator = self._refine_prot.iterAtoms()
-        i = 0
-        for atom in iterator:
-            self._omm_protein.positions[atom.getIndex()] = omm.Vec3(*new_position[i]) * nanometer / 10
-            i += 1
-        self._simulation.context.setPositions(self._omm_protein.positions)
-
-    def get_refine_prot(self):
-        """
-        Get ligand
-        @return: ligand object
-        @rtype: ProDy.AtomGroup
-        """
-
-        return self._refine_prot
-
-    def get_energy(self):
-        """
-        Calculates energy of the whole system
-        @return: energy value in kDJ/mol
-        @rtype: float
-        """
-
-        state = self._simulation.context.getState(getEnergy=True)
-        return state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
-
-    def get_force(self):
-        """
-        Calculates force vector that acts upon a protein to be refined
-        @return: force vector in kJ/mole/nm
-        @rtype: numpy.ndarray
-        """
-
-        state = self._simulation.context.getState(getForces=True)
-        all_forces = np.array(state.getForces().value_in_unit(kilojoule_per_mole / nanometer))
-        iterator = self._refine_prot.iterAtoms()
-        i = 0
-        forces = []
-        for atom in iterator:
-            forces.append(all_forces[atom.getIndex()])
-            i += 1
-        return np.array(forces)
-
-    def set_rigid(self, t, r):
-        """
-        Translates initial system by vector t and rotates via rotation operator r
-        @param t: translation vector t
-        @type t: np.ndarray
-        @param r: rotation operator
-        @type r: np.ndarray
-        """
-
-        pos = self.get_init_position().copy()
-        self._center = self._center_init + t
-        for i in range(len(pos)):
-            pos[i] += t
-            pos[i] = np.dot(r, pos[i] - self._center) + self._center
-        self.set_position(pos)
-    # """
-    # Selects a part of the system.
-    # """
-    # def select(self, selstr, **kwargs):
-    #     self._ligand = self._ligand.select(selstr, **kwargs)
-
-
-class NMSpaceWrapper:
-    _system = None
-    _modes_init = None
-    _modes = None
-    _eigenvalues = None
-    _anm = None
-    _position = None
-
-    def __init__(self, drs, n_modes=10, cutoff=15):
-        """
-        Create new wrapper of DRSystem instance. It allows you to operate the system in NM space.
-        @param drs: DRSystem instance to wrap.
-        @type drs: DRSystem
-        @param n_modes: number of modes. Should be less than 3 * NumberOfAtoms - 6.
-        @type n_modes: int
-        @param cutoff: interaction cutoff default is 15 A.
-        @type cutoff: float
-        """
-
-        self._position = np.zeros(n_modes)
-        self._system = drs
-        self._refine_prot_init = self._system._refine_prot.copy()
-        self._anm = pdy.ANM('anm')
-        self._anm.buildHessian(self._system.get_refine_prot(), cutoff=cutoff)
-        self._anm.calcModes(n_modes=n_modes, zeros=False)
-        self._modes_init = self._anm.getEigvecs().copy().T
-        self._modes = self._anm.getEigvecs().copy().T
-        self._eigenvalues = self._anm.getEigvals()
-
-    def get_position(self):
-        """
-        Returns current position in NM space.
-        @return: position of the protein as an m-d vector from NM space.
-        @rtype: numpy.ndarray
-        """
-
-        return self._position
-
-    def set_position(self, new_position):
-        """
-        Updates protein position in NM space.
-        @param new_position: new protein position in NM space.
-        @type new_position: numpy.ndarray
-        """
-
-        self._position = new_position
-        old_atom_position = self._refine_prot_init.getCoords()
-        atom_position = old_atom_position +\
-                        np.dot(self._modes.T, self._position).reshape((len(old_atom_position), 3))
-        self._system.set_position(atom_position)
-
-    def get_system_position(self):
-        """
-        Returns current coordinates
-        @return: coordinates of protein atoms as an array of 3d coordinates.
-        @rtype: numpy.ndarray
-        """
-
-        return self._system.get_position()
-
-    def get_energy(self):
-        """
-        Calculates energy of the whole system.
-        @return: energy value in kDJ/mol.
-        @rtype: float
-        """
-
-        return self._system.get_energy()
-
-    def get_force(self):
-        """
-        Calculates force vector that acts upon each mode.
-        @return: force vector in NM space.
-        @rtype: numpy.ndarray
-        """
-
-        aw_force = self._system.get_force()
-        force_1d = np.reshape(aw_force, (aw_force.shape[0] * 3,))
-        return np.dot(self._modes, force_1d)
-
-    def set_rigid(self, t, r):
-        """
-        Translates initial system by vector t and rotates via rotation operator r.
-        @param t: translation vector t.
-        @type t: np.ndarray
-        @param r: rotation operator.
-        @type r: np.ndarray
-        """
-
-        self._system.set_rigid(t, r)
-        m = self._modes_init.shape[0]
-        n = self._modes_init.shape[1]
-        tmp_modes = np.reshape(self._modes_init, (m, n // 3, 3)).copy()
-        for i in range(m):
-            for j in range(n // 3):
-                tmp_modes[i][j] = np.dot(r, tmp_modes[i][j])
-        self._modes = np.reshape(tmp_modes, (m, n))
-
-    def get_modes(self):
-        """
-        Get normal modes.'
-        @return: normal modes (shape = (m, 3N)).
-        @rtype: numpy.ndarray
-        """
-
-        return self._modes
-
-    def get_eigenvalues(self):
-        """
-        Get eigenvalues.
-        @return: eigenvalues.
-        @rtype: numpy.ndarray
-        """
-
-        return self._eigenvalues
-
-
 class ProteinComplex:
     """
-    A protein complex class
-
+    This class represents a protein complex.
     """
 
     # protein data
@@ -367,9 +77,18 @@ class ProteinComplex:
         self._simulation.context.setPositions(self._omm_protein.positions)
 
     def get_coords(self, index):
+        '''
+        Returns coordinates of a compartment corresponding to the index.
+        '''
+
         return self._compartments[index].getCoords()
 
     def set_coords(self, index, new_coords):
+        '''
+        Sets coordinates of a compartment corresponding to the index
+        to the given value.
+        '''
+
         self._compartments[index].setCoords(new_coords)
         iterator = self._compartments[index].iterAtoms()
         i = 0
@@ -382,6 +101,10 @@ class ProteinComplex:
             self._force_cached[i] = False
 
     def get_force(self, index):
+        '''
+        Reters a list of forces which act upon corresponding compartments of the complex.
+        '''
+
         if self._force_cached[index]:
             return self._force_cache[index]
         state = self._simulation.context.getState(getForces=True)
@@ -397,6 +120,10 @@ class ProteinComplex:
         return self._force_cache[index]
 
     def get_energy(self):
+        '''
+        Returns total potential energy of the complex.
+        '''
+
         if self._energy_cached:
             return self._energy_cache
         state = self._simulation.context.getState(getEnergy=True)
@@ -405,9 +132,17 @@ class ProteinComplex:
         return self._energy_cache
 
     def get_compartment(self, index):
+        '''
+        Returns a compartment corresponding to the index.
+        '''
+
         return self._compartments[index].copy()
 
     def get_bond_lengths(self, length_unit=angstrom):
+        '''
+        Returns bond lenths.
+        '''
+
         lengths = []
         for i, bond in enumerate(self._omm_protein.getTopology().bonds()):
             atom_1 = bond[0]
@@ -418,9 +153,17 @@ class ProteinComplex:
         return np.array(lengths)
 
     def copy(self):
+        '''
+        Returns an exact copy of the protein complex.
+        '''
+
         return ProteinComplex(self._source, self._force_field_name, self._selections)
 
     def to_pdb(self, handle):
+        '''
+        Saves complex to a .pdb file.
+        '''
+
         self._omm_protein.writeFile(positions=self._omm_protein.positions,
                                     topology=self._omm_protein.topology,
                                     file=handle)
@@ -446,22 +189,36 @@ class RestrictionWrapper:
         self._protein_complex = pc
 
     def set_position(self, index, new_pos):
-        pass
+        '''
+        Sets a position of a compartment corresponding to the index
+        to the given value. The position is given in a new parametrization.
+        '''
 
     def get_position(self, index):
-        pass
+        '''
+        Returns a position of a compartment corresponding to the index.
+        '''
 
     def get_force(self, index):
-        pass
+        '''
+        Returns a force acting upon a compartment corresponding to the index
+        represented in a new parametrization.
+        '''
 
     def get_energy(self):
-        pass
+        '''
+        Returns total poteintial energy of the complex.
+        '''
 
     def get_compartment(self, index):
-        pass
+        '''
+        Returns a compartment corresponding to the index.
+        '''
 
     def copy(self):
-        pass
+        '''
+        Returns an exacto copy of the object.
+        '''
 
     def __len__(self):
         return len(self._protein_complex)
@@ -469,8 +226,8 @@ class RestrictionWrapper:
 
 class RMRestrictionWrapper(RestrictionWrapper):
     """
-    Wraps the original protein complex allowing movement only along normal mode and rigid transformation
-
+    Wraps the original protein complex allowing movement only along
+    normal modes and rigid transformation.
     """
     _mode_params = None
     _positions = None
@@ -506,7 +263,9 @@ class RMRestrictionWrapper(RestrictionWrapper):
         # init position
         self._positions = []
         for i in range(len(self._protein_complex)):
-            self._positions.append([np.zeros((3,)), np.quaternion(1, 0, 0, 0), np.zeros((mode_params[i]['nmodes'],))])
+            self._positions.append([np.zeros((3,)), 
+                                    np.quaternion(1, 0, 0, 0),
+                                    np.zeros((mode_params[i]['nmodes'],))])
 
         # init modes
         for i in range(len(self._protein_complex)):
@@ -608,40 +367,100 @@ class RMRestrictionWrapper(RestrictionWrapper):
         pass
 
 
-def save_trajectory(drs, states, output_file, tmp_file='../output/tmp_system.pdb', log=None):
-    tmp_file = str(tmp_file)
-    output_file = str(output_file)
-    n_states = len(states)
-    trj = None
-    if log is not None:
-        log.write('Trajectory info:\n' +
-                  f'\tnumber of states: {n_states}\n' +
-                  f'\ttemporary file: {tmp_file}\n' +
-                  f'\touput file: {output_file}\n')
-    for i in range(n_states):
-        drs.set_position(states[i])
-        with open(tmp_file, 'w') as input_file:
-            drs._omm_protein.writeFile(positions=drs._omm_protein.positions,
-                                       topology=drs._omm_protein.topology,
-                                       file=input_file)
-        if trj is not None:
-            trj = trj.join(mdt.load(tmp_file))
-        else:
-            trj = mdt.load(tmp_file)
-        if log is not None:
-            if i % 5 == 0:
-                log.write(f'creating trajectory: {100 * (i + 1) / n_states:.1f}%\n')
-    if log is not None:
-        log.write(f'Saving trajectory...\n')
-    trj.save_pdb(output_file)
-    if log is not None:
-        log.write(f'Done!\n')
-
-
 class CGDMode(Enum):
+    '''
+    Different optimization modes.
+    '''
+
     FLEXIBLE = 1
     RIGID = 2
     BOTH = 3
+
+
+class MCGOptimizationResult:
+    '''
+    Instances of this class contain and process an optimization result of
+    a protein complex.
+    '''
+
+    def __init__(self, extended=False, save_history=False):
+        self._optimization_result = {}
+        self._extended = extended
+        self._save_history = save_history
+        self._length = 0
+        self.init_optimization_result_main()
+        if self._extended:
+            self.init_optimization_result_extended()
+
+    def init_optimization_result_main(self):
+        self._optimization_result['forces'] = []
+        self._optimization_result['energies'] = []
+        self._optimization_result['coords'] = []
+        self._optimization_result['positions'] = []
+        self._optimization_result['success'] = True
+
+    def init_optimization_result_extended(self):
+        self._optimization_result['translation_diff'] = []
+        self._optimization_result['rotation_diff'] = []
+        self._optimization_result['mode_diff'] = []
+        self._optimization_result['rigid_rmsd'] = []
+        self._optimization_result['flexible_rmsd'] = []
+
+    def update_main(self, rw):
+        positions = [rw.get_position(i) for i in range(len(rw))]
+        energy = rw.get_energy()
+        forces = [rw.get_force(i) for i in range(len(rw))]
+        coords = [rw._protein_complex.get_coords(i) for i in range(len(rw))]
+        self._optimization_result['positions'].append(positions)
+        self._optimization_result['energies'].append(energy)
+        self._optimization_result['forces'].append(forces)
+        self._optimization_result['coords'].append(coords)
+        self._length += 1
+
+    def get_main(self, index, pos=-1):
+        position = self._optimization_result['positions'][pos][index]
+        force = self._optimization_result['forces'][pos][index]
+        coords = self._optimization_result['coords'][pos][index]
+        energy = self._optimization_result['energies'][pos]
+        return {'energy': energy, 'position': position, 'force': force, 'coords': coords}
+
+    def get_energy(self, pos=-1):
+        energy = self._optimization_result['energies'][pos]
+        return energy
+
+    def update_translation_diff(self, td):
+        self._optimization_result['translation_diff'].append(td)
+
+    def update_mode_diff(self, md):
+        self._optimization_result['mode_diff'].append(md)
+
+    def update_rotation_diff(self, rd):
+        self._optimization_result['rotation_diff'].append(rd)
+
+    def update_rigid_rmsd(self, rr):
+        self._optimization_result['rigid_rmsd'].append(rr)
+
+    def update_flexible_rmsd(self, fr):
+        self._optimization_result['flexible_rmsd'].append(fr)
+
+    def get_extended(self, index, pos=-1):
+        translation_diff = self._optimization_result['translation_diff'][pos][index]
+        mode_diff = self._optimization_result['mode_diff'][pos][index]
+        rotation_diff = self._optimization_result['rotation_diff'][pos][index]
+        rigid_rmsd = self._optimization_result['rigid_rmsd'][pos][index]
+        flexible_rmsd = self._optimization_result['flexible_rmsd'][pos][index]
+        return {'translation_diff': translation_diff, 'mode_diff': mode_diff,
+                'rotation_diff': rotation_diff, 'rigid_rmsd': rigid_rmsd,
+                'flexible_rmsd': flexible_rmsd}
+
+    def get_status(self):
+        return self._optimization_result['success']
+
+    def set_status(self, status):
+        self._optimization_result['success'] = status
+
+    def __len__(self):
+        return self._length
 
 
 def confined_gradient_descent(
@@ -655,9 +474,11 @@ def confined_gradient_descent(
     @type rw: RMRestrictionWrapper
     @param decrement: fold step when choosing optimal step
     @type decrement: float
-    @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid)
+    @param relative_bounds_r: minimum and maximum rmsd between actual
+                              intermediate state and the next one (rigid)
     @type relative_bounds_r: tuple
-    @param relative_bounds_s: minimum and maximum rmsd between actual intermediate state and the next one (modes)
+    @param relative_bounds_s: minimum and maximum rmsd between actual
+                              intermediate state and the next one (modes)
     @type relative_bounds_s: tuple
     @param max_iter: maximum number of iterations
     @type max_iter: int
@@ -806,87 +627,6 @@ def confined_gradient_descent(
     return optimization_result
 
 
-class MCGOptimizationResult:
-    def __init__(self, extended=False, save_history=False):
-        self._optimization_result = {}
-        self._extended = extended
-        self._save_history = save_history
-        self._length = 0
-        self.init_optimization_result_main()
-        if self._extended:
-            self.init_optimization_result_extended()
-
-    def init_optimization_result_main(self):
-        self._optimization_result['forces'] = []
-        self._optimization_result['energies'] = []
-        self._optimization_result['coords'] = []
-        self._optimization_result['positions'] = []
-        self._optimization_result['success'] = True
-
-    def init_optimization_result_extended(self):
-        self._optimization_result['translation_diff'] = []
-        self._optimization_result['rotation_diff'] = []
-        self._optimization_result['mode_diff'] = []
-        self._optimization_result['rigid_rmsd'] = []
-        self._optimization_result['flexible_rmsd'] = []
-
-    def update_main(self, rw):
-        positions = [rw.get_position(i) for i in range(len(rw))]
-        energy = rw.get_energy()
-        forces = [rw.get_force(i) for i in range(len(rw))]
-        coords = [rw._protein_complex.get_coords(i) for i in range(len(rw))]
-        self._optimization_result['positions'].append(positions)
-        self._optimization_result['energies'].append(energy)
-        self._optimization_result['forces'].append(forces)
-        self._optimization_result['coords'].append(coords)
-        self._length += 1
-
-    def get_main(self, index, pos=-1):
-        position = self._optimization_result['positions'][pos][index]
-        force = self._optimization_result['forces'][pos][index]
-        coords = self._optimization_result['coords'][pos][index]
-        energy = self._optimization_result['energies'][pos]
-        return {'energy': energy, 'position': position, 'force': force, 'coords': coords}
-
-    def get_energy(self, pos=-1):
-        energy = self._optimization_result['energies'][pos]
-        return energy
-
-    def update_translation_diff(self, td):
-        self._optimization_result['translation_diff'].append(td)
-
-    def update_mode_diff(self, md):
-        self._optimization_result['mode_diff'].append(md)
-
-    def update_rotation_diff(self, rd):
-        self._optimization_result['rotation_diff'].append(rd)
-
-    def update_rigid_rmsd(self, rr):
-        self._optimization_result['rigid_rmsd'].append(rr)
-
-    def update_flexible_rmsd(self, fr):
-        self._optimization_result['flexible_rmsd'].append(fr)
-
-    def get_extended(self, index, pos=-1):
-        translation_diff = self._optimization_result['translation_diff'][pos][index]
-        mode_diff = self._optimization_result['mode_diff'][pos][index]
-        rotation_diff = self._optimization_result['rotation_diff'][pos][index]
-        rigid_rmsd = self._optimization_result['rigid_rmsd'][pos][index]
-        flexible_rmsd = self._optimization_result['flexible_rmsd'][pos][index]
-        return {'translation_diff': translation_diff, 'mode_diff': mode_diff,
-                'rotation_diff': rotation_diff, 'rigid_rmsd': rigid_rmsd,
-                'flexible_rmsd': flexible_rmsd}
-
-    def get_status(self):
-        return self._optimization_result['success']
-
-    def set_status(self, status):
-        self._optimization_result['success'] = status
-
-    def __len__(self):
-        return self._length
-
-
 def multimolecule_confined_gradient_descent(
         rw, decrement=0.9, relative_bounds_r=(0.01, 3), relative_bounds_s=(0.01, 0.5),
         max_iter=100, save_history=False, extended_result=False, log=False, mode=CGDMode.BOTH):
@@ -898,9 +638,11 @@ def multimolecule_confined_gradient_descent(
     @type rw: RMRestrictionWrapper
     @param decrement: fold step when choosing optimal step
     @type decrement: float
-    @param relative_bounds_r: minimum and maximum rmsd between actual intermediate state and the next one (rigid)
+    @param relative_bounds_r: minimum and maximum rmsd between actual
+                              intermediate state and the next one (rigid)
     @type relative_bounds_r: tuple
-    @param relative_bounds_s: minimum and maximum rmsd between actual intermediate state and the next one (modes)
+    @param relative_bounds_s: minimum and maximum rmsd between actual
+                              intermediate state and the next one (modes)
     @type relative_bounds_s: tuple
     @param max_iter: maximum number of iterations
     @type max_iter: int
@@ -1084,14 +826,17 @@ def multimolecule_confined_gradient_descent(
 
 def bond_hessian(omm_protein, bound_constant=10, unbound_constant=1, cutoff=7.5):
     """
-    Calculates hessian for anisotropic network model where bound interactions are stiffer the unbound
+    Calculates hessian for anisotropic network model where bound
+    interactions are stiffer than unbound
 
-    @param protein: protein
-    @type protein: prody selection
+    @param omm_protein: protein
+    @type omm_protein: prody selection
     @param bound_constant: bound interaction constant
     @type bound_constant: float
     @param unbound_constant: unbound interaction constant
     @type unbound_constant: float
+    @param cutoff: interaction cutoff
+    @type cutoff: float
     @return: hessian matrix
     """
 
@@ -1119,12 +864,14 @@ def bond_hessian(omm_protein, bound_constant=10, unbound_constant=1, cutoff=7.5)
                 k = -unbound_constant / rij ** 2
             for a in range(3):
                 for b in range(3):
-                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+                    hessian_matrix[i * 3 + a, j * 3 + b] = (k * (pos2[a] - pos1[a]) *
+                                                            (pos2[b] - pos1[b]))
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -=\
+                hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
     return hessian_matrix
 
 
@@ -1148,18 +895,21 @@ def hydrogen_hessian(omm_protein, hydrogen_constant=10, heavy_constant=1, cutoff
                 k = -heavy_constant / rij ** 2
             for a in range(3):
                 for b in range(3):
-                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+                    hessian_matrix[i * 3 + a, j * 3 + b] = (k * (pos2[a] - pos1[a]) *
+                                                            (pos2[b] - pos1[b]))
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -=\
+                hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
     return hessian_matrix
 
 
 def surface_hessian(omm_protein, surface_constant=10.0, internal_constant=1, cutoff=7.5, depth=4.5):
     time_start = time.time()
-    print(f'Surface hessian: surface_constant={surface_constant} internal_constant={internal_constant} cutoff={cutoff} depth={depth}')
+    print(f'Surface hessian: surface_constant={surface_constant} ' +
+          f'internal_constant={internal_constant} cutoff={cutoff} depth={depth}')
     n = omm_protein.topology.getNumAtoms()
     hessian_matrix = np.zeros((3 * n, 3 * n))
     surface_factors = np.zeros((n,))
@@ -1181,17 +931,22 @@ def surface_hessian(omm_protein, surface_constant=10.0, internal_constant=1, cut
                 k = -internal_constant / rij ** 2
             for a in range(3):
                 for b in range(3):
-                    hessian_matrix[i * 3 + a, j * 3 + b] = k * (pos2[a] - pos1[a]) * (pos2[b] - pos1[b])
+                    hessian_matrix[i * 3 + a, j * 3 + b] = (k * (pos2[a] - pos1[a]) *
+                                                            (pos2[b] - pos1[b]))
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -= hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
+            hessian_matrix[(i * 3):(i * 3 + 3), (i * 3):(i * 3 + 3)] -=\
+                hessian_matrix[(i * 3):(i * 3 + 3), (j * 3):(j * 3 + 3)]
     print(f'Surface hessian has been computed in {dt.timedelta(seconds=time.time() - time_start)}')
     return hessian_matrix
 
 
-def bond_hessian_modification(hessian, omm_protein, unbonded_constant=1, bonded_constant=10, cutoff=7.5):
+def bond_hessian_modification(
+        hessian, omm_protein, unbonded_constant=1,
+        bonded_constant=10, cutoff=7.5
+    ):
     """
     Modifies hessian for anisotropic network model where bound interactions are stiffer the unbound
 
@@ -1243,8 +998,10 @@ def bond_hessian_modification(hessian, omm_protein, unbonded_constant=1, bonded_
     return hessian_matrix
 
 
-def surface_bond_hessian(omm_protein, surface_constant=10.0, internal_constant=1, cutoff=7.5, depth=4.5,
-                           unbonded_constant=1, bonded_constant=10):
+def surface_bond_hessian(
+        omm_protein, surface_constant=10.0, internal_constant=1,
+        cutoff=7.5, depth=4.5, unbonded_constant=1, bonded_constant=10
+    ):
     """
     @param omm_protein: omm protein structure
     @param bonded_constant: bound interaction constant

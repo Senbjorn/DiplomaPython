@@ -13,15 +13,16 @@ import prody as pdy
 
 @unique
 class SeqTypeMod(Enum):
-    RAY = "structureX"
-    NMR = "structureN"
-    MOD = "structureM"
-    ANY = "structure"
-    SEQ = "sequence"
+    RAY = 'structureX'
+    NMR = 'structureN'
+    MOD = 'structureM'
+    ANY = 'structure'
+    SEQ = 'sequence'
 
 
-def self_alignment(residues, pdb_file, sequence_file, alignment_file='../output/tmp/alignment.ali', postfix="_REFINED"):
-    """
+def self_alignment(residues, pdb_file, sequence_file,
+                   alignment_file='../output/tmp/alignment.ali', postfix='_REFINED'):
+    '''
     Creates an alignment of sequence from .pdb file. to itself.
 
     @param residues: residues to model.
@@ -34,9 +35,9 @@ def self_alignment(residues, pdb_file, sequence_file, alignment_file='../output/
     @type alignment_file: str
     @return: full set of residues for modelling.
     @rtype: set
-    """
+    '''
     # read sequence and structure
-    target_sequence = SeqIO.read(sequence_file, "pir")
+    target_sequence = SeqIO.read(sequence_file, 'pir')
     structure = pdy.parsePDB(pdb_file)
 
     # initialize missing residue set as all residue indices
@@ -52,7 +53,7 @@ def self_alignment(residues, pdb_file, sequence_file, alignment_file='../output/
         real_seq[i - 1] = '-'
     origin_sequence = SeqIO.SeqRecord(real_seq, target_sequence.id, target_sequence.name, target_sequence.description)
     # save as an alignment
-    with open(alignment_file, "w") as output_file:
+    with open(alignment_file, 'w') as output_file:
         write_sequence(output_file, origin_sequence,
                        origin_sequence.id, SeqTypeMod.ANY, pdb_file)
         write_sequence(output_file, target_sequence,
@@ -61,16 +62,17 @@ def self_alignment(residues, pdb_file, sequence_file, alignment_file='../output/
 
 
 def write_sequence(handle, sequence, id, seq_type, path,
-                   res1="FIRST", ch1="@", res2="LAST", ch2="@",
-                   name="", source="", resolution="", r_factor=""):
-    """
+                   res1='FIRST', ch1='@', res2='LAST', ch2='@',
+                   name='', source='', resolution='', r_factor=''):
+    '''
     Writes sequence in PIR format for modeller.
 
     @param handle: output handle.
     @type handle: handle type
     @param sequence: output sequence.
     @type sequence: Bio.SeqIO.SeqRecord
-    @param id: sequence identifier. It should not contain some characters such as colons, semicolons etc.
+    @param id: sequence identifier. It should not contain some characters such as
+               colons, semicolons etc.
     Use only alphanumerical characters and underscore.
     @type id: str
     @param seq_type: sequence type.
@@ -93,24 +95,19 @@ def write_sequence(handle, sequence, id, seq_type, path,
     @type resolution: str
     @param r_factor: r-factor.
     @type r_factor: str
-    """
-    out_seq = SeqIO.SeqRecord(sequence.seq, id, "", "{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}".format(
-            seq_type.value,
-            path,
-            res1,
-            ch1,
-            res2,
-            ch2,
-            name,
-            source,
-            resolution,
-            r_factor
-    ))
+    '''
+    out_seq = SeqIO.SeqRecord(
+        sequence.seq, id, '', '{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}'.format(
+            seq_type.value, path, res1,
+            ch1, res2, ch2, name,
+            source, resolution, r_factor
+        )
+    )
     SeqIO.write(out_seq, handle, format="pir")
 
 
 def fix_residues(residues, alignment_file):
-    """
+    '''
     Adds missing residues file or refines residues containing missing atoms.
 
     @param residues: set of missing residues
@@ -118,8 +115,8 @@ def fix_residues(residues, alignment_file):
     @param alignment_file: alignment which contains original sequence and reduced sequence.
     Only missing residues will be modelled. You can get alignment_file via create_mra function
     @type alignment_file: str
-    """
-    sequences = SeqIO.parse(alignment_file, "pir")
+    '''
+    sequences = SeqIO.parse(alignment_file, 'pir')
 
     knowns_id = next(sequences).id
     sequence_id = next(sequences).id
