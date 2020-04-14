@@ -17,7 +17,7 @@ from simtk.unit import *
 import prody as pdy
 
 import project
-from fast_computation import *
+from core.fast_computation import *
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler()

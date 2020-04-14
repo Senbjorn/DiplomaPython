@@ -2,14 +2,15 @@
 import os
 from pathlib import Path
 from settings import *
+import dotenv
 
 
 def setup():
     global project_path, source_path, test_path, output_path, data_path
+    dotenv.load_dotenv()
     project_path = Path(project_path)
     source_path = Path(source_path)
     test_path = Path(test_path)
     output_path = Path(output_path)
     data_path = Path(data_path)
-
     os.chdir(project_path)

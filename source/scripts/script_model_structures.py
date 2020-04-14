@@ -1,4 +1,4 @@
-from refine import *
+from core.refine import *
 from pdbfixer import PDBFixer
 import os
 import traceback

@@ -1,6 +1,6 @@
 import project
 from pathlib import Path
-from model_residue import *
+from core.model_residue import *
 
 # setup project variables
 project.setup()

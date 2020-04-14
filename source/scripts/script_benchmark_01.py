@@ -1,5 +1,5 @@
-from refine import *
-from utils import get_random_direction
+from core.refine import *
+from core.utils import get_random_direction
 import os
 import pickle
 import project
